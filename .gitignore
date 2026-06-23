@@ -1,5 +1,6 @@
 # weights
 *.pt
 
-# env file
+# environment
 *.env
+*.venv
