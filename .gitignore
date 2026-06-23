@@ -4,3 +4,6 @@
 # environment
 *.env
 *.venv
+
+# py
+__pycache__
