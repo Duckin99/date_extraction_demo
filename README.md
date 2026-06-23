@@ -17,4 +17,4 @@ passport_stamp/
 └── pipeline.py           # The Orchestrator
 ```
 
-> Note: `app.py` is fully vibed coding 
+> Note: `app.py` and `post-process` are fully vibe coded 
