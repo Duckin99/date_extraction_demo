@@ -25,13 +25,12 @@ class DocumentPipeline:
             cx2, cy2 = min(w, x2 + pad), min(h, y2 + pad)
             
             crop_np = img_np[cy1:cy2, cx1:cx2]
-            crop_height = cy2 - cy1
             
             # Execute OCR
             raw_text, words_data = self.extractor.extract(crop_np)
             
             # Apply post process
-            dates = post_process(raw_text, words_data, stamp["type"], crop_height)
+            dates = post_process(raw_text, words_data, stamp["type"])
             
             results.append({
                 "id": f"STAMP-{idx + 1:02d}",

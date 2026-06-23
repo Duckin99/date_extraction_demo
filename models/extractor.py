@@ -15,9 +15,6 @@ class AzureExtractor:
 
     def extract(self, img_crop: np.ndarray) -> Tuple[str, List[Dict[str, Any]]]:
         """Sends cropped image to Azure and returns text and word confidences."""
-        if not self.client.endpoint:
-            return "", []
-
         # Convert OpenCV RGB array to JPEG bytes
         _, encoded_image = cv2.imencode('.jpg', cv2.cvtColor(img_crop, cv2.COLOR_RGB2BGR))
         image_bytes = encoded_image.tobytes()
