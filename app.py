@@ -226,7 +226,7 @@ def main():
                                 "Confidence": round(stamp["det_conf"] * d["ocr_conf"], 3),
                             })
                         
-                        df = pd.DataFrame(rows)
+                        df = pd.DataFrame(rows, columns=["Data Classification", "Extracted Date", "Confidence"])
                         
                         # Apply pandas styling to the dataframe for the confidence fading logic
                         styled_df = df.style.map(style_confidence, subset=['Confidence'])
@@ -242,7 +242,7 @@ def main():
                                     required=True
                                 ),
                                 "Extracted Date": st.column_config.DateColumn(
-                                    "Date (Click to open calendar)", 
+                                    "Date", 
                                     format="DD MMM YYYY",
                                     required=True
                                 ),
