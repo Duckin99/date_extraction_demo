@@ -10,6 +10,13 @@ import pandas as pd
 import streamlit as st
 from PIL import Image
 from datetime import datetime
+from pipeline import DocumentPipeline
+
+@st.cache_resource
+def get_pipeline():
+    return DocumentPipeline()
+
+pipeline = get_pipeline()
 
 st.set_page_config(page_title="Passport Stamp Extraction Demo", layout="wide")
 
@@ -174,7 +181,7 @@ def main():
                 img_pil = Image.open(file).convert("RGB")
                 img_np  = np.array(img_pil)
                 with st.spinner("Processing Document Architecture..."):
-                    stamps = run_pipeline(img_np)
+                    stamps = pipeline.process(img_np)
                 st.session_state.results[file.name] = stamps
                 st.session_state.processed.add(file.name)
 
