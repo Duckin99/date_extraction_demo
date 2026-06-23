@@ -1,0 +1,5 @@
+# weights
+*.pt
+
+# env file
+*.env
