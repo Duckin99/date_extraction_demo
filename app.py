@@ -236,7 +236,7 @@ for tab, file in zip(tabs, uploads):
                     rows.append({
                         "Type":       d["type"],
                         "Date":       parsed,
-                        "Confidence": round(sel["det_conf"] * d["ocr_conf"] * 100, 3),
+                        "Confidence": round(d["ocr_conf"] * 100, 3),
                     })
                 st.data_editor(
                     pd.DataFrame(rows),
@@ -273,7 +273,7 @@ for tab, file in zip(tabs, uploads):
                         all_dates.append({
                             **d,
                             "parsed": datetime.strptime(d["value"], "%d %b %Y"),
-                            "conf":   round(s["det_conf"] * d["ocr_conf"], 3),
+                            "conf":   round(d["ocr_conf"], 3),
                         })
                     except:
                         pass
