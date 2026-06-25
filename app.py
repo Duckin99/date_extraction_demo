@@ -1,9 +1,12 @@
 """
-demo_app.py  —  Passport Stamp Extraction Demo
-Run: streamlit run demo_app.py
+demo_app.py — Passport Stamp Extraction Demo
+Run:  streamlit run demo_app.py
+
+Pipeline integration
+--------------------
+See README.md for the expected return schema and a mock example.
 """
 
-import time
 import cv2
 import numpy as np
 import pandas as pd
@@ -18,246 +21,286 @@ def get_pipeline():
 
 pipeline = get_pipeline()
 
-st.set_page_config(page_title="Passport Stamp Extraction Demo", layout="wide")
+# ── AIA Colour Palette  (https://design.aia.com/colour) ────────────────────
+RED      = "#D31145"  # Digital Red 500       — Exit stamps, primary CTA
+CHARCOAL = "#333D47"  # Digital Charcoal 600  — body text, borders
+PURPLE   = "#4C4794"  # Digital Purple        — Entry stamps
+SALMON   = "#FF7A85"  # Digital Salmon        — Until dates
+WHITE    = "#FFFFFF"
+GREY     = "#F4F4F4"  # Charcoal 100          — card backgrounds
 
-# Custom CSS for clean, formal typography using Charcoal
-st.markdown("""
-<style>
-.block-container { padding-top: 1.5rem; padding-bottom: 2rem; color: #333D47; }
-.stButton > button { width: 100%; border-radius: 4px; font-weight: 600; }
-.info-text { font-size: 14px; color: #333D47; margin-bottom: 15px; line-height: 1.5; }
-</style>
-""", unsafe_allow_html=True)
+TYPE_COLOR = {"Entry": PURPLE, "Exit": RED, "Until": SALMON}
 
-# --- Exact HEX Palette ---
-PALETTE = {
-    "Entry": "#4C4794",   # PURPLE
-    "Exit": "#D31145",    # RED
-    "Until": "#FF7A85",   # SALMON
-    "Text": "#333D47",    # CHARCOAL
-    "Highlight": "#BA0361" # CERISE (Used for confidence shading)
-}
+# ── Page config ─────────────────────────────────────────────────────────────
+st.set_page_config(page_title="Passport Stamp Review", layout="wide")
 
-def hex_to_bgr(hex_str: str):
-    """Converts HEX color to OpenCV BGR format."""
-    h = hex_str.lstrip('#')
-    rgb = tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
-    return (rgb[2], rgb[1], rgb[0])
+st.markdown(f"""<style>
+  .block-container {{ padding-top: 1.2rem; padding-bottom: 2rem; }}
+  body, p, div, span, label {{ color: {CHARCOAL}; font-family: 'Inter', sans-serif; }}
+  h1, h2, h3 {{ color: {CHARCOAL}; letter-spacing: -0.3px; }}
+  .stButton > button {{ border-radius: 4px; font-weight: 600; }}
+  .section-label {{
+    font-size: 11px; font-weight: 700; letter-spacing: 1px;
+    text-transform: uppercase; color: {CHARCOAL}88; margin-bottom: 8px;
+  }}
+</style>""", unsafe_allow_html=True)
 
-# --- Mock Pipeline ---
-def run_pipeline(img_np: np.ndarray) -> list[dict]:
-    time.sleep(0.8) 
-    return [
-        {
-            "id": "STAMP-01",
-            "type": "Entry",
-            "box": [50, 50, 350, 200], 
-            "det_conf": 0.95,
-            "dates": [
-                {"value": "12 MAR 2026", "type": "Entry", "ocr_conf": 0.98},
-                {"value": "10 APR 2026", "type": "Until",  "ocr_conf": 0.55}, 
-            ],
-        },
-        {
-            "id": "STAMP-02",
-            "type": "Exit",
-            "box": [300, 250, 600, 400],
-            "det_conf": 0.88, 
-            "dates": [
-                {"value": "15 MAR 2026", "type": "Exit", "ocr_conf": 0.92},
-            ],
-        },
-    ]
 
-# --- Image Processing Utilities ---
-def draw_boxes(img: np.ndarray, stamps: list[dict]) -> np.ndarray:
-    """Draws solid bounding boxes based on the exact HEX palette."""
+# ── Image helpers ────────────────────────────────────────────────────────────
+def to_bgr(h):
+    h = h.lstrip("#")
+    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    return (b, g, r)
+
+
+def draw_boxes(img, stamps, selected_id):
     out = img.copy()
-    
     for s in stamps:
         x1, y1, x2, y2 = s["box"]
-        hex_color = PALETTE.get(s["type"], PALETTE["Text"])
-        color_bgr = hex_to_bgr(hex_color)
-        
-        # Solid border
-        cv2.rectangle(out, (x1, y1), (x2, y2), color_bgr, 3)
-        
-        # Solid Label Background
-        label = f"{s['type']} ({s['det_conf']:.0%})"
-        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)
-        cv2.rectangle(out, (x1, y1 - th - 10), (x1 + tw + 8, y1), color_bgr, -1)
-        cv2.putText(out, label, (x1 + 4, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
-        
+        color     = to_bgr(TYPE_COLOR.get(s["type"], CHARCOAL))
+        is_sel    = s["id"] == selected_id
+        thickness = 4 if is_sel else 2
+        overlay   = out.copy()
+        cv2.rectangle(overlay, (x1, y1), (x2, y2), color, thickness)
+        cv2.addWeighted(overlay, 1.0 if is_sel else 0.5, out, 0.0 if is_sel else 0.5, 0, out)
+        label = f"{s['type']}  {s['det_conf']:.0%}"
+        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+        cv2.rectangle(out, (x1, y1 - th - 9), (x1 + tw + 8, y1), color, -1)
+        cv2.putText(out, label, (x1 + 4, y1 - 4),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
     return out
 
-def crop_stamp(img: np.ndarray, box: list[int]) -> np.ndarray:
+
+def crop(img, box, pad=16):
+    h, w = img.shape[:2]
     x1, y1, x2, y2 = box
-    h, w, _ = img.shape
-    x1, y1 = max(0, x1 - 10), max(0, y1 - 10)
-    x2, y2 = min(w, x2 + 10), min(h, y2 + 10)
-    return img[y1:y2, x1:x2]
+    return img[max(0, y1-pad):min(h, y2+pad), max(0, x1-pad):min(w, x2+pad)]
 
-# --- Data Styling ---
-def style_confidence(val):
-    """Applies Cerise color fading logic to table cells based on confidence score."""
-    # Convert HEX BA0361 to RGB for rgba string: 186, 3, 97
-    alpha = float(val)
-    # High confidence = solid color, Low confidence = faded/transparent
-    color = f'background-color: rgba(186, 3, 97, {alpha}); color: #FFFFFF;'
-    return color
 
-# --- Session State ---
-def init_state():
-    if "results" not in st.session_state: st.session_state.results = {}
-    if "verified" not in st.session_state: st.session_state.verified = set()
-    if "processed" not in st.session_state: st.session_state.processed = set()
+def conf_bar(value, color):
+    pct = int(value * 100)
+    return (f"<div style='background:{GREY};border-radius:3px;height:5px;margin-top:4px;'>"
+            f"<div style='width:{pct}%;background:{color};height:5px;border-radius:3px;'></div></div>"
+            f"<span style='font-size:11px;color:{CHARCOAL}88;'>{pct}%</span>")
 
-# --- Main App ---
-def main():
-    init_state()
-    st.title("Document Data Verification")
-    
-    st.markdown("""
-    <div class="info-text">
-        <strong>Review Guidelines:</strong> Ensure extracted dates align with the physical document. 
-        In the data tables, the Confidence column utilizes opacity shading. 
-        Solid Cerise indicates high system confidence, while faded cells highlight uncertain data requiring human review.
-    </div>
-    """, unsafe_allow_html=True)
 
-    with st.sidebar:
-        st.header("Workspace")
-        uploads = st.file_uploader(
-            "Select Scanned Documents", type=["jpg", "jpeg", "png"],
-            accept_multiple_files=True, label_visibility="collapsed"
-        )
+# ── Session state ─────────────────────────────────────────────────────────────
+for k, v in [("results", {}), ("selected", {}), ("verified", set())]:
+    if k not in st.session_state:
+        st.session_state[k] = v
 
-        if uploads:
-            total = len(uploads)
-            done = len(st.session_state.verified)
-            
-            st.markdown(f"**Verification Progress: {done} / {total}**")
-            st.progress(done / total if total else 0)
+
+# ── Sidebar ───────────────────────────────────────────────────────────────────
+with st.sidebar:
+    st.markdown(f"<h3 style='color:{RED};margin-bottom:0;'>Stamp Review</h3>", unsafe_allow_html=True)
+    st.markdown(f"<p style='font-size:12px;color:{CHARCOAL}88;margin-top:2px;'>"
+                f"Passport Entry / Exit Detection</p>", unsafe_allow_html=True)
+    st.divider()
+
+    uploads = st.file_uploader("Upload passport images", type=["jpg", "jpeg", "png"],
+                               accept_multiple_files=True)
+
+    if uploads:
+        done = len(st.session_state.verified)
+        st.markdown(f"**Progress: {done} / {len(uploads)} verified**")
+        st.progress(done / len(uploads) if uploads else 0)
+        st.divider()
+        for f in uploads:
+            done_flag = f.name in st.session_state.verified
+            dot   = f"<span style='color:{RED};'>&#9679;</span>" if done_flag else \
+                    f"<span style='color:{CHARCOAL}44;'>&#9675;</span>"
+            label = "Verified" if done_flag else "Pending"
+            st.markdown(f"{dot} &nbsp;{f.name} "
+                        f"<span style='font-size:11px;color:{CHARCOAL}66;'>({label})</span>",
+                        unsafe_allow_html=True)
+
+    if st.session_state.verified:
+        st.divider()
+        rows = []
+        for name, stamps in st.session_state.results.items():
+            if name not in st.session_state.verified:
+                continue
+            for s in stamps:
+                for d in s["dates"]:
+                    rows.append({
+                        "Document":   name,
+                        "Stamp":      s["id"],
+                        "Stamp Type": s["type"],
+                        "Date Type":  d["type"],
+                        "Date":       d["value"],
+                        "Confidence": round(s["det_conf"] * d["ocr_conf"], 3),
+                    })
+        csv = pd.DataFrame(rows).to_csv(index=False)
+        st.download_button("Export Verified Records", csv, "verified_records.csv",
+                           "text/csv", use_container_width=True, type="primary")
+
+
+# ── Main ──────────────────────────────────────────────────────────────────────
+if not uploads:
+    st.markdown("## Passport Stamp Extraction")
+    st.markdown(f"<p style='color:{CHARCOAL}88;'>Upload passport page images from the sidebar to begin.</p>",
+                unsafe_allow_html=True)
+    st.stop()
+
+tabs = st.tabs([f.name for f in uploads])
+
+for tab, file in zip(tabs, uploads):
+    with tab:
+        fname = file.name
+
+        if fname not in st.session_state.results:
+            img_np = np.array(Image.open(file).convert("RGB"))
+            with st.spinner("Processing document..."):
+                # ── PIPELINE CALL ──────────────────────────────────────────
+                stamps = pipeline.process(img_np)
+                # ──────────────────────────────────────────────────────────
+            st.session_state.results[fname]  = stamps
+            st.session_state.selected[fname] = None
+
+        stamps = st.session_state.results[fname]
+        sel_id = st.session_state.selected.get(fname)
+        img_np = np.array(Image.open(file).convert("RGB"))
+
+        if not stamps:
+            st.info("No stamps detected in this document.")
+            continue
+
+        col_left, col_right = st.columns([1.2, 1], gap="large")
+
+        # ── LEFT: Document image ──────────────────────────────────────────
+        with col_left:
+            st.markdown('<p class="section-label">Document View</p>', unsafe_allow_html=True)
+
+            if sel_id:
+                sel = next(s for s in stamps if s["id"] == sel_id)
+                c   = TYPE_COLOR.get(sel["type"], CHARCOAL)
+                st.markdown(
+                    f"<div style='border-left:3px solid {c};padding:6px 12px;"
+                    f"background:{c}18;border-radius:0 4px 4px 0;margin-bottom:10px;'>"
+                    f"<strong style='color:{c};'>{sel['id']} — {sel['type']} Stamp</strong>"
+                    f"&nbsp;<span style='font-size:12px;color:{CHARCOAL}88;'>"
+                    f"Detection {sel['det_conf']:.0%}</span></div>",
+                    unsafe_allow_html=True
+                )
+                st.image(crop(img_np, sel["box"]), use_container_width=True)
+                st.markdown(f"<p style='font-size:11px;color:{CHARCOAL}55;'>"
+                            f"Full document context</p>", unsafe_allow_html=True)
+
+            st.image(draw_boxes(img_np, stamps, sel_id), use_container_width=True)
+
+        # ── RIGHT: Stamp cards + editor + timeline ────────────────────────
+        with col_right:
+
+            # Stamp selector
+            st.markdown('<p class="section-label">Detected Stamps</p>', unsafe_allow_html=True)
+            cols = st.columns(len(stamps))
+            for col, s in zip(cols, stamps):
+                c      = TYPE_COLOR.get(s["type"], CHARCOAL)
+                is_sel = s["id"] == sel_id
+                with col:
+                    st.markdown(
+                        f"<div style='border:{'2px solid '+c if is_sel else '1px solid '+CHARCOAL+'22'};"
+                        f"border-radius:6px;padding:10px 6px;background:{c+'18' if is_sel else WHITE};"
+                        f"text-align:center;'>"
+                        f"<span style='color:{c};font-weight:700;font-size:13px;'>{s['type']}</span><br>"
+                        f"<span style='font-size:11px;color:{CHARCOAL}88;'>{s['id']}</span><br>"
+                        + conf_bar(s["det_conf"], c) +
+                        f"</div>", unsafe_allow_html=True
+                    )
+                    if st.button("Select", key=f"sel_{fname}_{s['id']}", use_container_width=True):
+                        st.session_state.selected[fname] = s["id"]
+                        st.rerun()
+
             st.divider()
 
-            for f in uploads:
-                status = "[Verified]" if f.name in st.session_state.verified else "[Pending]"
-                st.markdown(f"{status} {f.name}")
+            # Date editor
+            if sel_id:
+                sel = next(s for s in stamps if s["id"] == sel_id)
+                st.markdown(f'<p class="section-label">Extracted Dates — {sel_id}</p>',
+                            unsafe_allow_html=True)
+                rows = []
+                for d in sel["dates"]:
+                    try:    parsed = datetime.strptime(d["value"], "%d %b %Y").date()
+                    except: parsed = None
+                    rows.append({
+                        "Type":       d["type"],
+                        "Date":       parsed,
+                        "Confidence": round(sel["det_conf"] * d["ocr_conf"], 3),
+                    })
+                st.data_editor(
+                    pd.DataFrame(rows),
+                    num_rows="dynamic",
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "Type": st.column_config.SelectboxColumn(
+                            options=["Entry", "Exit", "Until", "Unknown"], required=True),
+                        "Date": st.column_config.DateColumn("Date", format="DD MMM YYYY"),
+                        "Confidence": st.column_config.NumberColumn(format="%.0f%%", disabled=True),
+                    },
+                    key=f"ed_{fname}_{sel_id}",
+                )
+            else:
+                st.markdown(
+                    f"<div style='padding:20px;background:{GREY};border-radius:6px;"
+                    f"text-align:center;color:{CHARCOAL}66;font-size:13px;'>"
+                    f"Select a stamp above to review its extracted dates.</div>",
+                    unsafe_allow_html=True
+                )
 
-        if st.session_state.verified:
             st.divider()
-            if st.button("Export Verified Data", type="secondary", width="stretch"):
-                all_rows = []
-                for name, stamps in st.session_state.results.items():
-                    if name in st.session_state.verified:
-                        for s in stamps:
-                            for d in s["dates"]:
-                                all_rows.append({
-                                    "Document": name,
-                                    "Stamp_ID": s["id"],
-                                    "Stamp_Type": s["type"],
-                                    "Date_Type": d["type"],
-                                    "Extracted_Date": d["value"],
-                                    "System_Confidence": round(s["det_conf"] * d["ocr_conf"], 3),
-                                })
-                csv = pd.DataFrame(all_rows).to_csv(index=False)
-                st.download_button("Download CSV Record", csv, "verified_records.csv", "text/csv", width="stretch")
 
-    if not uploads:
-        st.info("System Ready. Please upload documents in the workspace sidebar to begin processing.")
-        return
+            # Date timeline
+            st.markdown('<p class="section-label">Date Timeline</p>', unsafe_allow_html=True)
+            all_dates = []
+            for s in stamps:
+                for d in s["dates"]:
+                    try:
+                        all_dates.append({
+                            **d,
+                            "parsed": datetime.strptime(d["value"], "%d %b %Y"),
+                            "conf":   round(s["det_conf"] * d["ocr_conf"], 3),
+                        })
+                    except:
+                        pass
+            all_dates.sort(key=lambda x: x["parsed"])
 
-    pending = [f for f in uploads if f.name not in st.session_state.verified]
-
-    if not pending:
-        st.success("All documents have been successfully verified. Data is ready for export.")
-        return
-
-    tabs = st.tabs([f.name for f in pending])
-
-    for tab, file in zip(tabs, pending):
-        with tab:
-            if file.name not in st.session_state.processed:
-                img_pil = Image.open(file).convert("RGB")
-                img_np  = np.array(img_pil)
-                with st.spinner("Processing Document Architecture..."):
-                    stamps = pipeline.process(img_np)
-                st.session_state.results[file.name] = stamps
-                st.session_state.processed.add(file.name)
-
-            stamps = st.session_state.results[file.name]
-            img_pil = Image.open(file).convert("RGB")
-            img_np = np.array(img_pil)
-            
-            # Solid standard boxes
-            img_drawn = draw_boxes(img_np, stamps)
-
-            col_context, col_review = st.columns([1.2, 1.5])
-
-            with col_context:
-                st.markdown("**Full Document Context**")
-                st.image(img_drawn, width="stretch")
-
-            with col_review:
-                st.markdown("**Targeted Data Review**")
-                
-                for idx, stamp in enumerate(stamps):
-                    st.markdown(f"**Region: {stamp['id']}**")
-                    
-                    r_col1, r_col2 = st.columns([1, 1.5])
-                    
-                    with r_col1:
-                        stamp_crop = crop_stamp(img_np, stamp["box"])
-                        st.image(stamp_crop, width="stretch")
-                        st.markdown(f"<span style='font-size: 12px; color: {PALETTE['Text']};'>Detection Conf: {stamp['det_conf']:.2f}</span>", unsafe_allow_html=True)
-
-                    with r_col2:
-                        rows = []
-                        for d in stamp["dates"]:
-                            # Convert string date to actual Python datetime object for the Date Picker widget
-                            try:
-                                parsed_date = datetime.strptime(d["value"], "%d %b %Y").date()
-                            except ValueError:
-                                parsed_date = None
-                                
-                            rows.append({
-                                "Data Classification": d["type"],
-                                "Extracted Date": parsed_date,
-                                "Confidence": round(stamp["det_conf"] * d["ocr_conf"], 3),
-                            })
-                        
-                        df = pd.DataFrame(rows, columns=["Data Classification", "Extracted Date", "Confidence"])
-                        
-                        # Apply pandas styling to the dataframe for the confidence fading logic
-                        styled_df = df.style.map(style_confidence, subset=['Confidence'])
-                        
-                        edited_df = st.data_editor(
-                            styled_df,
-                            num_rows="dynamic",
-                            width="stretch",
-                            hide_index=True,
-                            column_config={
-                                "Data Classification": st.column_config.SelectboxColumn(
-                                    options=["Entry", "Exit", "Until", "Unknown"],
-                                    required=True
-                                ),
-                                "Extracted Date": st.column_config.DateColumn(
-                                    "Date", 
-                                    format="DD MMM YYYY",
-                                    required=True
-                                ),
-                                "Confidence": st.column_config.NumberColumn(
-                                    format="%.3f", 
-                                    disabled=True
-                                ),
-                            },
-                            key=f"editor_{file.name}_{stamp['id']}"
+            if all_dates:
+                tl = st.columns(len(all_dates) * 2 - 1)
+                for i, d in enumerate(all_dates):
+                    c = TYPE_COLOR.get(d["type"], CHARCOAL)
+                    with tl[i * 2]:
+                        st.markdown(
+                            f"<div style='background:{c};color:{WHITE};border-radius:6px;"
+                            f"padding:10px 6px;text-align:center;'>"
+                            f"<div style='font-size:10px;opacity:0.85;letter-spacing:0.5px;'>"
+                            f"{d['type'].upper()}</div>"
+                            f"<div style='font-weight:700;font-size:13px;margin:3px 0;'>"
+                            f"{d['parsed'].strftime('%d %b %Y')}</div>"
+                            f"<div style='font-size:10px;opacity:0.8;'>{d['conf']:.0%}</div>"
+                            f"</div>", unsafe_allow_html=True
                         )
-                    st.divider()
+                    if i < len(all_dates) - 1:
+                        with tl[i * 2 + 1]:
+                            st.markdown(
+                                f"<div style='text-align:center;padding-top:18px;"
+                                f"color:{CHARCOAL}44;font-size:18px;'>&#8594;</div>",
+                                unsafe_allow_html=True
+                            )
+            else:
+                st.markdown(f"<span style='color:{CHARCOAL}55;font-size:13px;'>"
+                            f"No dates extracted.</span>", unsafe_allow_html=True)
 
-                if st.button("Commit Verification", key=f"verify_{file.name}", type="primary", width="stretch"):
-                    st.session_state.verified.add(file.name)
-                    st.rerun()
-
-if __name__ == "__main__":
-    main()
+        # ── Verify button ─────────────────────────────────────────────────
+        st.divider()
+        if fname not in st.session_state.verified:
+            if st.button("Mark Document as Verified", type="primary",
+                         key=f"verify_{fname}", use_container_width=True):
+                st.session_state.verified.add(fname)
+                st.rerun()
+        else:
+            st.markdown(
+                f"<div style='background:{RED}11;border:1px solid {RED}44;border-radius:6px;"
+                f"padding:10px;text-align:center;color:{RED};font-weight:600;'>"
+                f"Document Verified</div>", unsafe_allow_html=True
+            )
