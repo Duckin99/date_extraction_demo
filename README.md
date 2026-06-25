@@ -1,4 +1,6 @@
-## 1. Project Structure
+# Passport Stamp Extraction Demo
+
+## Project Structure
 ```
 passport_stamp/
 ├── .env                  
@@ -14,12 +16,15 @@ passport_stamp/
 ├── utils/
 │   ├── __init__.py
 │   └── post_process.py   # Date parsing logic
+├── others/               # Other script no related to pipeline and demo
+│   ├── eval.py           # E2E evaluation
+│   └── gen_report.py     # Generate confusion matrix 
 └── pipeline.py           # The Orchestrator
 ```
 
 > Note: `app.py` and `post-process` are fully vibe coded 
 
-## 2. End-to-end result on Test set
+## End-to-end result on Test set
 
 Definitions: TP, TN, FP, FN on E2E
 
@@ -40,3 +45,97 @@ Definitions: TP, TN, FP, FN on E2E
   <br>
   <em>Figure 1: E2E Confusion Matrix</em>
 </p>
+
+## Setup
+
+```bash
+pip install streamlit opencv-python-headless pillow pandas
+streamlit run demo_app.py
+```
+
+## Pipeline Integration
+
+In `demo_app.py`, find the comment block and replace with your real call:
+
+```python
+# from pipeline import DocumentPipeline
+# pipeline = DocumentPipeline()
+stamps = pipeline.process(img_np)
+```
+
+## Expected `stamps` Schema
+
+`pipeline.process()` must return a list of dicts in this format:
+
+```python
+[
+    {
+        "id":       "STAMP-01",          # unique string per stamp
+        "type":     "Entry",             # "Entry" | "Exit"
+        "box":      [x1, y1, x2, y2],   # pixel coords on original image
+        "det_conf": 0.95,                # YOLO detection confidence (0-1)
+        "dates": [
+            {
+                "value":    "12 MAR 2026",  # string, format: DD MMM YYYY
+                "type":     "Entry",        # "Entry" | "Until"
+                "ocr_conf": 0.98            # Azure OCR confidence (0-1)
+            },
+            {
+                "value":    "10 APR 2026",
+                "type":     "Until",
+                "ocr_conf": 0.55
+            }
+        ]
+    },
+    {
+        "id":       "STAMP-02",
+        "type":     "Exit",
+        "box":      [300, 250, 600, 400],
+        "det_conf": 0.88,
+        "dates": [
+            {
+                "value":    "15 MAR 2026",
+                "type":     "Exit",
+                "ocr_conf": 0.92
+            }
+        ]
+    }
+]
+```
+
+## Mock for Local Testing
+
+Paste this directly into `demo_app.py` during development
+(replace the `stamps = []` line):
+
+```python
+import time
+time.sleep(0.8)
+stamps = [
+    {
+        "id": "STAMP-01", "type": "Entry",
+        "box": [50, 50, 350, 200], "det_conf": 0.95,
+        "dates": [
+            {"value": "12 MAR 2026", "type": "Entry", "ocr_conf": 0.98},
+            {"value": "10 APR 2026", "type": "Until", "ocr_conf": 0.55},
+        ],
+    },
+    {
+        "id": "STAMP-02", "type": "Exit",
+        "box": [300, 250, 600, 400], "det_conf": 0.88,
+        "dates": [
+            {"value": "15 MAR 2026", "type": "Exit", "ocr_conf": 0.92},
+        ],
+    },
+]
+```
+
+## Colour Reference
+
+| Token    | Hex       | Usage                     |
+|----------|-----------|---------------------------|
+| Entry    | `#4C4794` | Digital Purple            |
+| Exit     | `#D31145` | Digital Red 500           |
+| Until    | `#FF7A85` | Digital Salmon            |
+| Text     | `#333D47` | Digital Charcoal 600      |
+| BG cards | `#F4F4F4` | Charcoal 100              |
