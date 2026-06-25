@@ -273,30 +273,40 @@ for tab, file in zip(tabs, uploads):
             all_dates.sort(key=lambda x: x["parsed"])
 
             if all_dates:
-                tl = st.columns(len(all_dates) * 2 - 1)
-                for i, d in enumerate(all_dates):
-                    c = TYPE_COLOR.get(d["type"], CHARCOAL)
-                    with tl[i * 2]:
-                        st.markdown(
-                            f"<div style='background:{c};color:{WHITE};border-radius:6px;"
-                            f"padding:10px 6px;text-align:center;'>"
-                            f"<div style='font-size:10px;opacity:0.85;letter-spacing:0.5px;color:{WHITE}'>"
-                            f"{d['type'].upper()}</div>"
-                            f"<div style='font-weight:700;font-size:13px;margin:3px 0;color:{WHITE}'>"
-                            f"{d['parsed'].strftime('%d %b %Y')}</div>"
-                            f"<div style='font-size:10px;opacity:0.8;{WHITE}'>{d['conf']:.0%}</div>"
-                            f"</div>", unsafe_allow_html=True
-                        )
-                    if i < len(all_dates) - 1:
-                        with tl[i * 2 + 1]:
+                DATES_PER_ROW = 4
+                
+                for i in range(0, len(all_dates), DATES_PER_ROW):
+                    chunk = all_dates[i:i + DATES_PER_ROW]
+                    
+                    # Always create 7 columns (4 dates + 3 arrows) to keep widths consistent across multiple rows
+                    tl = st.columns(DATES_PER_ROW * 2 - 1)
+                    
+                    for j, d in enumerate(chunk):
+                        c = TYPE_COLOR.get(d["type"], CHARCOAL)
+                        with tl[j * 2]:
+                            # Fixed a small CSS typo here as well (color:{WHITE}) and added bottom margin for row spacing
                             st.markdown(
-                                f"<div style='text-align:center;padding-top:18px;"
-                                f"color:{CHARCOAL}44;font-size:18px;'>&#8594;</div>",
-                                unsafe_allow_html=True
+                                f"<div style='background:{c};color:{WHITE};border-radius:6px;"
+                                f"padding:10px 6px;text-align:center;margin-bottom:12px;'>"
+                                f"<div style='font-size:10px;opacity:0.85;letter-spacing:0.5px;color:{WHITE}'>"
+                                f"{d['type'].upper()}</div>"
+                                f"<div style='font-weight:700;font-size:13px;margin:3px 0;color:{WHITE}'>"
+                                f"{d['parsed'].strftime('%d %b %Y')}</div>"
+                                f"<div style='font-size:10px;opacity:0.8;color:{WHITE}'>{d['conf']:.0%}</div>"
+                                f"</div>", unsafe_allow_html=True
                             )
+                        
+                        # Add the arrow if it's not the last date in this specific chunk
+                        if j < len(chunk) - 1:
+                            with tl[j * 2 + 1]:
+                                st.markdown(
+                                    f"<div style='text-align:center;padding-top:18px;"
+                                    f"color:{CHARCOAL}44;font-size:18px;'>&#8594;</div>",
+                                    unsafe_allow_html=True
+                                )
             else:
                 st.markdown(f"<span style='color:{CHARCOAL}55;font-size:13px;'>"
-                            f"No dates extracted.</span>", unsafe_allow_html=True)
+                            f"No relevant entry/exit dates extracted.</span>", unsafe_allow_html=True)
 
         # ── Verify button ─────────────────────────────────────────────────
         st.divider()
