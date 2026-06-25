@@ -129,7 +129,7 @@ with st.sidebar:
                         "Stamp Type": s["type"],
                         "Date Type":  d["type"],
                         "Date":       d["value"],
-                        "Confidence": round(s["det_conf"] * d["ocr_conf"], 3),
+                        "Confidence": round(d["ocr_conf"], 3),
                     })
         csv = pd.DataFrame(rows).to_csv(index=False)
         st.download_button("Export Verified Records", csv, "verified_records.csv",
@@ -193,10 +193,16 @@ for tab, file in zip(tabs, uploads):
         with col_right:
 
             # Stamp selector
-            st.markdown('<p class="section-label">Detected Stamps</p>', unsafe_allow_html=True)
+            for s in stamps:
+                ocr_confs = [d["ocr_conf"] for d in s.get("dates", [])]
+                s["max_ocr_conf"] = max(ocr_confs) if ocr_confs else 0.0
+
+            stamps_sorted = sorted(stamps, key=lambda x: x["max_ocr_conf"], reverse=True)
+
+            st.markdown('<p class="section-label">Detected Stamps (Sorted by OCR Confidence)</p>', unsafe_allow_html=True)
             STAMPS_PER_ROW = 4
-            for i in range(0, len(stamps), STAMPS_PER_ROW):
-                chunk = stamps[i:i + STAMPS_PER_ROW]
+            for i in range(0, len(stamps_sorted), STAMPS_PER_ROW):
+                chunk = stamps_sorted[i:i + STAMPS_PER_ROW]
                 cols = st.columns(STAMPS_PER_ROW)
                 for col, s in zip(cols, chunk):
                     c      = TYPE_COLOR.get(s["type"], CHARCOAL)
@@ -208,7 +214,8 @@ for tab, file in zip(tabs, uploads):
                             f"text-align:center;margin-bottom:8px;'>"
                             f"<span style='color:{c};font-weight:700;font-size:13px;'>{s['type']}</span><br>"
                             f"<span style='font-size:11px;color:{CHARCOAL}88;'>{s['id']}</span><br>"
-                            + conf_bar(s["det_conf"], c) +
+                            # CHANGED: เปลี่ยนจาก s["det_conf"] เป็น s["max_ocr_conf"] เพื่อแสดงความแม่นยำของตัวอักษรแทน
+                            + conf_bar(s["max_ocr_conf"], c) + 
                             f"</div>", unsafe_allow_html=True
                         )
                         if st.button("Select", key=f"sel_{fname}_{s['id']}", width='stretch'):
