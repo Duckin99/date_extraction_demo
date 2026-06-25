@@ -18,7 +18,12 @@ class YoloDetector:
                 conf = float(box.conf[0].cpu().numpy())
                 cls_id = int(box.cls[0].cpu().numpy())
                 
-                stamp_type = "Entry" if "entry" in self.names[cls_id].lower() else "Exit"
+                if "entry2" in self.names[cls_id].lower():
+                    stamp_type = "Entry"
+                elif "exit2" in self.names[cls_id].lower():
+                    stamp_type = "Exit"
+                else:
+                    continue
                 
                 stamps.append({
                     "box": coords,
