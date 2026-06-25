@@ -35,13 +35,14 @@ TYPE_COLOR = {"Entry": PURPLE, "Exit": RED, "Until": SALMON}
 st.set_page_config(page_title="Passport Stamp Review", layout="wide")
 
 st.markdown(f"""<style>
-  .block-container {{ padding-top: 1.2rem; padding-bottom: 2rem; }}
-  body, p, div, span, label {{ color: {CHARCOAL}; font-family: 'Inter', sans-serif; }}
-  h1, h2, h3 {{ color: {CHARCOAL}; letter-spacing: -0.3px; }}
+  .block-container {{ padding-top: 2rem; padding-bottom: 2rem; }}
+  p, label {{ color: {CHARCOAL}; font-family: 'Inter', sans-serif; }}
+  h1, h2, h3 {{ color: {CHARCOAL} !important; letter-spacing: -0.3px; }}
   .stButton > button {{ border-radius: 4px; font-weight: 600; }}
   .section-label {{
     font-size: 11px; font-weight: 700; letter-spacing: 1px;
     text-transform: uppercase; color: {CHARCOAL}88; margin-bottom: 8px;
+    margin-top: 12px;
   }}
 </style>""", unsafe_allow_html=True)
 
@@ -132,7 +133,7 @@ with st.sidebar:
                     })
         csv = pd.DataFrame(rows).to_csv(index=False)
         st.download_button("Export Verified Records", csv, "verified_records.csv",
-                           "text/csv", use_container_width=True, type="primary")
+                           "text/csv", width='stretch', type="primary")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -182,34 +183,37 @@ for tab, file in zip(tabs, uploads):
                     f"Detection {sel['det_conf']:.0%}</span></div>",
                     unsafe_allow_html=True
                 )
-                st.image(crop(img_np, sel["box"]), use_container_width=True)
+                st.image(crop(img_np, sel["box"]), width='stretch')
                 st.markdown(f"<p style='font-size:11px;color:{CHARCOAL}55;'>"
                             f"Full document context</p>", unsafe_allow_html=True)
 
-            st.image(draw_boxes(img_np, stamps, sel_id), use_container_width=True)
+            st.image(draw_boxes(img_np, stamps, sel_id), width='stretch')
 
         # ── RIGHT: Stamp cards + editor + timeline ────────────────────────
         with col_right:
 
             # Stamp selector
             st.markdown('<p class="section-label">Detected Stamps</p>', unsafe_allow_html=True)
-            cols = st.columns(len(stamps))
-            for col, s in zip(cols, stamps):
-                c      = TYPE_COLOR.get(s["type"], CHARCOAL)
-                is_sel = s["id"] == sel_id
-                with col:
-                    st.markdown(
-                        f"<div style='border:{'2px solid '+c if is_sel else '1px solid '+CHARCOAL+'22'};"
-                        f"border-radius:6px;padding:10px 6px;background:{c+'18' if is_sel else WHITE};"
-                        f"text-align:center;'>"
-                        f"<span style='color:{c};font-weight:700;font-size:13px;'>{s['type']}</span><br>"
-                        f"<span style='font-size:11px;color:{CHARCOAL}88;'>{s['id']}</span><br>"
-                        + conf_bar(s["det_conf"], c) +
-                        f"</div>", unsafe_allow_html=True
-                    )
-                    if st.button("Select", key=f"sel_{fname}_{s['id']}", use_container_width=True):
-                        st.session_state.selected[fname] = s["id"]
-                        st.rerun()
+            STAMPS_PER_ROW = 4
+            for i in range(0, len(stamps), STAMPS_PER_ROW):
+                chunk = stamps[i:i + STAMPS_PER_ROW]
+                cols = st.columns(STAMPS_PER_ROW)
+                for col, s in zip(cols, chunk):
+                    c      = TYPE_COLOR.get(s["type"], CHARCOAL)
+                    is_sel = s["id"] == sel_id
+                    with col:
+                        st.markdown(
+                            f"<div style='border:{'2px solid '+c if is_sel else '1px solid '+CHARCOAL+'22'};"
+                            f"border-radius:6px;padding:10px 6px;background:{c+'18' if is_sel else WHITE};"
+                            f"text-align:center;margin-bottom:8px;'>"
+                            f"<span style='color:{c};font-weight:700;font-size:13px;'>{s['type']}</span><br>"
+                            f"<span style='font-size:11px;color:{CHARCOAL}88;'>{s['id']}</span><br>"
+                            + conf_bar(s["det_conf"], c) +
+                            f"</div>", unsafe_allow_html=True
+                        )
+                        if st.button("Select", key=f"sel_{fname}_{s['id']}", width='stretch'):
+                            st.session_state.selected[fname] = s["id"]
+                            st.rerun()
 
             st.divider()
 
@@ -225,18 +229,18 @@ for tab, file in zip(tabs, uploads):
                     rows.append({
                         "Type":       d["type"],
                         "Date":       parsed,
-                        "Confidence": round(sel["det_conf"] * d["ocr_conf"], 3),
+                        "Confidence": round(sel["det_conf"] * d["ocr_conf"] * 100, 3),
                     })
                 st.data_editor(
                     pd.DataFrame(rows),
                     num_rows="dynamic",
-                    use_container_width=True,
+                    width='stretch',
                     hide_index=True,
                     column_config={
                         "Type": st.column_config.SelectboxColumn(
                             options=["Entry", "Exit", "Until", "Unknown"], required=True),
                         "Date": st.column_config.DateColumn("Date", format="DD MMM YYYY"),
-                        "Confidence": st.column_config.NumberColumn(format="%.0f%%", disabled=True),
+                        "Confidence": st.column_config.NumberColumn(format="%.2f%%", disabled=True),
                     },
                     key=f"ed_{fname}_{sel_id}",
                 )
@@ -255,6 +259,9 @@ for tab, file in zip(tabs, uploads):
             all_dates = []
             for s in stamps:
                 for d in s["dates"]:
+                    # ignore Until in Date Timeline
+                    if d["type"].lower() == "until":
+                        continue
                     try:
                         all_dates.append({
                             **d,
@@ -273,11 +280,11 @@ for tab, file in zip(tabs, uploads):
                         st.markdown(
                             f"<div style='background:{c};color:{WHITE};border-radius:6px;"
                             f"padding:10px 6px;text-align:center;'>"
-                            f"<div style='font-size:10px;opacity:0.85;letter-spacing:0.5px;'>"
+                            f"<div style='font-size:10px;opacity:0.85;letter-spacing:0.5px;color:{WHITE}'>"
                             f"{d['type'].upper()}</div>"
-                            f"<div style='font-weight:700;font-size:13px;margin:3px 0;'>"
+                            f"<div style='font-weight:700;font-size:13px;margin:3px 0;color:{WHITE}'>"
                             f"{d['parsed'].strftime('%d %b %Y')}</div>"
-                            f"<div style='font-size:10px;opacity:0.8;'>{d['conf']:.0%}</div>"
+                            f"<div style='font-size:10px;opacity:0.8;{WHITE}'>{d['conf']:.0%}</div>"
                             f"</div>", unsafe_allow_html=True
                         )
                     if i < len(all_dates) - 1:
@@ -295,7 +302,7 @@ for tab, file in zip(tabs, uploads):
         st.divider()
         if fname not in st.session_state.verified:
             if st.button("Mark Document as Verified", type="primary",
-                         key=f"verify_{fname}", use_container_width=True):
+                         key=f"verify_{fname}", width='stretch'):
                 st.session_state.verified.add(fname)
                 st.rerun()
         else:
