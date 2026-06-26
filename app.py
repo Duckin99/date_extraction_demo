@@ -1,7 +1,6 @@
 """
 demo_app.py — Passport Stamp Extraction Demo
 Run:  streamlit run demo_app.py
-See README.md for pipeline schema.
 """
 
 import cv2
@@ -38,11 +37,14 @@ st.markdown(f"""<style>
     font-size: 11px; font-weight: 700; letter-spacing: 1px;
     text-transform: uppercase; color: {CHARCOAL}88; margin-bottom: 6px;
   }}
-  /* AIA Red for all primary buttons */
+  /* Force White & Bold text on primary buttons */
+  button[kind="primary"] p {{
+    color: {WHITE} !important;
+    font-weight: 700 !important;
+  }}
   button[kind="primary"] {{
     background-color: {RED} !important;
     border-color: {RED} !important;
-    color: {WHITE} !important;
   }}
   button[kind="primary"]:hover {{
     background-color: #B01039 !important;
@@ -53,7 +55,6 @@ st.markdown(f"""<style>
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 def to_rgb(h):
-    """Hex → (R,G,B) for OpenCV on RGB images (PIL default)."""
     h = h.lstrip("#")
     return int(h[0:2],16), int(h[2:4],16), int(h[4:6],16)
 
@@ -62,7 +63,6 @@ def hex_rgba(h, alpha):
     return f"rgba({r},{g},{b},{alpha:.2f})"
 
 def draw_boxes(img, stamps, sel_id):
-    """img is RGB (from PIL). OpenCV draws in-place using RGB tuples."""
     out = img.copy()
     for s in stamps:
         x1, y1, x2, y2 = s["box"]
@@ -100,7 +100,6 @@ def primary_date(s):
     return best["value"], best["type"]
 
 def to_date(val):
-    """Safely parse a date value from data_editor (date obj, string, or None)."""
     if val is None:
         return None
     if isinstance(val, (datetime, date)):
@@ -120,10 +119,12 @@ def sync_edits(edited_df, fname, sel_id):
             updated.append({
                 "value":    val,
                 "type":     row.get("Type", "Unknown"),
-                "ocr_conf": orig.get("ocr_conf", 0.0),
+                "ocr_conf": orig.get("ocr_conf", 1.0 if val else 0.0),
             })
-        s["dates"] = updated
-        break
+        if s["dates"] != updated:
+            s["dates"] = updated
+            return True
+    return False
 
 
 # ── Session state ─────────────────────────────────────────────────────────────
@@ -149,7 +150,6 @@ with st.sidebar:
         st.progress(done / total)
         st.divider()
 
-        # Document selector — avoids tab scroll issue
         file_names = [f.name for f in uploads]
         active_file = st.radio(
             "Documents",
@@ -168,7 +168,6 @@ if not uploads:
                 unsafe_allow_html=True)
     st.stop()
 
-# All verified
 if len(st.session_state.verified) == len(uploads):
     st.markdown(
         f"<div style='background:{hex_rgba(RED,0.06)};border:1px solid {hex_rgba(RED,0.3)};"
@@ -180,11 +179,9 @@ if len(st.session_state.verified) == len(uploads):
     )
     st.stop()
 
-# Pick the active file object
 file = next(f for f in uploads if f.name == active_file)
 fname = file.name
 
-# ── Process ───────────────────────────────────────────────────────────────────
 if fname not in st.session_state.results:
     img_np = np.array(Image.open(file).convert("RGB"))
     with st.spinner("Processing document..."):
@@ -196,7 +193,6 @@ stamps = st.session_state.results[fname]
 sel_id = st.session_state.selected.get(fname)
 img_np = np.array(Image.open(file).convert("RGB"))
 
-# Document header
 st.markdown(
     f"<div style='margin-bottom:12px;'>"
     f"<span style='font-size:18px;font-weight:700;color:{CHARCOAL};'>{fname}</span>"
@@ -210,10 +206,8 @@ if not stamps:
     st.info("No stamps detected in this document.")
     st.stop()
 
-# Summary banner
-n_entry   = sum(1 for s in stamps if s["type"] == "Entry")
-n_exit    = sum(1 for s in stamps if s["type"] == "Exit")
-n_unknown = sum(1 for s in stamps if primary_date(s)[0] is None)
+n_entry = sum(1 for s in stamps if s["type"] == "Entry")
+n_exit  = sum(1 for s in stamps if s["type"] == "Exit")
 st.markdown(
     f"<div style='background:{GREY};border-radius:6px;padding:8px 16px;"
     f"display:flex;gap:12px;align-items:center;margin-bottom:14px;'>"
@@ -222,9 +216,6 @@ st.markdown(
     f"border-radius:3px;font-size:12px;font-weight:700;'>{n_entry} Entry</span>"
     f"<span style='background:{RED};color:{WHITE};padding:2px 10px;"
     f"border-radius:3px;font-size:12px;font-weight:700;'>{n_exit} Exit</span>"
-    + (f"<span style='background:{CHARCOAL}55;color:{WHITE};padding:2px 10px;"
-       f"border-radius:3px;font-size:12px;font-weight:700;'>{n_unknown} Unknown</span>"
-       if n_unknown else "") +
     f"</div>", unsafe_allow_html=True
 )
 
@@ -251,76 +242,15 @@ with col_left:
 
     st.image(draw_boxes(img_np, stamps, sel_id), width="stretch")
 
-# ── RIGHT: Timeline + editor ──────────────────────────────────────────────────
+# ── RIGHT: Editor (Top) + Timeline Container (Bottom) ────────────────────────
 with col_right:
-    st.markdown('<p class="label">Timeline</p>', unsafe_allow_html=True)
-
-    for i, s in enumerate(sorted(stamps, key=sort_key)):
-        date_val, date_type = primary_date(s)
-        c          = TYPE_COLOR.get(s["type"], CHARCOAL)
-        conf       = max((d.get("ocr_conf",0) for d in s.get("dates",[])), default=0)
-        is_sel     = s["id"] == sel_id
-        is_unknown = date_val is None
-
-        # Vertical arrow between dated entries
-        if i > 0:
-            prev_date = primary_date(sorted(stamps, key=sort_key)[i-1])[0]
-            if date_val and prev_date:
-                st.markdown(
-                    f"<div style='text-align:center;color:{CHARCOAL}33;font-size:16px;"
-                    f"margin:2px 0;'>&#8595;</div>", unsafe_allow_html=True
-                )
-
-        # Card styling
-        if is_unknown:
-            border = f"1.5px dashed {GREY_BD}"
-            bg     = GREY
-        elif is_sel:
-            border = f"2px solid {c}"
-            bg     = hex_rgba(c, 0.12)
-        else:
-            border = f"1px solid {hex_rgba(c, 0.3)}"
-            bg     = hex_rgba(c, max(0.05, conf * 0.15))
-
-        conf_pct = int(conf * 100)
-        conf_html = (
-            f"<div style='background:{GREY_BD};border-radius:3px;height:4px;margin-top:6px;'>"
-            f"<div style='width:{conf_pct}%;background:{c};height:4px;border-radius:3px;'></div></div>"
-            f"<span style='font-size:11px;color:{CHARCOAL}88;'>{conf_pct}% confidence</span>"
-        ) if not is_unknown else (
-            f"<span style='font-size:11px;color:{CHARCOAL}55;'>No date detected — click to add</span>"
-        )
-
-        badge_bg = c if not is_unknown else f"{CHARCOAL}55"
-        st.markdown(
-            f"<div style='border:{border};border-radius:8px;padding:10px 14px;"
-            f"background:{bg};margin-bottom:4px;'>"
-            f"<div style='display:flex;justify-content:space-between;align-items:center;'>"
-            f"<span style='background:{badge_bg};color:{WHITE};font-size:10px;font-weight:700;"
-            f"letter-spacing:0.5px;padding:2px 8px;border-radius:3px;'>{s['type'].upper()}</span>"
-            f"<span style='font-size:11px;color:{CHARCOAL}66;'>{s['id']}</span></div>"
-            f"<div style='font-size:16px;font-weight:700;color:{CHARCOAL};margin:4px 0;'>"
-            f"{date_val if date_val else '—'}</div>"
-            + conf_html +
-            f"</div>", unsafe_allow_html=True
-        )
-        if st.button(
-            "Add Date" if is_unknown else "Edit",
-            key=f"sel_{fname}_{s['id']}",
-            width="stretch",
-            type="primary" if is_unknown else "secondary",
-        ):
-            st.session_state.selected[fname] = s["id"]
-
-    st.divider()
-
-    # ── Date editor ───────────────────────────────────────────────────────
+    
     if sel_id:
         sel = next(s for s in stamps if s["id"] == sel_id)
         c   = TYPE_COLOR.get(sel["type"], CHARCOAL)
         st.markdown(
             f"<div style='border-left:3px solid {c};padding:4px 10px;margin-bottom:8px;'>"
-            f"<strong style='color:{c};font-size:13px;'>Editing {sel_id}</strong></div>",
+            f"<strong style='color:{c};font-size:13px;'>Editing Metadata: {sel_id}</strong></div>",
             unsafe_allow_html=True
         )
         rows = []
@@ -343,15 +273,80 @@ with col_right:
             },
             key=f"ed_{fname}_{sel_id}",
         )
-        sync_edits(edited, fname, sel_id)
+        if sync_edits(edited, fname, sel_id):
+            st.rerun()
     else:
         st.markdown(
             f"<div style='padding:16px;background:{GREY};border-radius:6px;"
             f"text-align:center;color:{CHARCOAL}66;font-size:13px;"
-            f"border:1px dashed {GREY_BD};'>"
-            f"Select a stamp from the timeline to review or edit its date.</div>",
+            f"border:1px dashed {GREY_BD};margin-bottom:12px;'>"
+            f"Select a stamp below from the timeline to view or edit details.</div>",
             unsafe_allow_html=True
         )
+
+    st.divider()
+
+    st.markdown('<p class="label">Stamp Timeline Queue</p>', unsafe_allow_html=True)
+    
+    stamps_sorted = sorted(stamps, key=sort_key)
+    
+    with st.container(height=380):
+        for i, s in enumerate(stamps_sorted):
+            date_val, date_type = primary_date(s)
+            c          = TYPE_COLOR.get(s["type"], CHARCOAL)
+            conf       = max((d.get("ocr_conf",0) for d in s.get("dates",[])), default=0)
+            is_sel     = s["id"] == sel_id
+            is_unknown = date_val is None
+
+            if i > 0:
+                prev_date = primary_date(stamps_sorted[i-1])[0]
+                if date_val and prev_date:
+                    st.markdown(
+                        f"<div style='text-align:center;color:{CHARCOAL}33;font-size:14px;"
+                        f"margin:0px;'>&#8595;</div>", unsafe_allow_html=True
+                    )
+
+            if is_unknown:
+                border = f"1.5px dashed {GREY_BD}"
+                bg     = GREY
+            elif is_sel:
+                border = f"2px solid {c}"
+                bg     = hex_rgba(c, 0.12)
+            else:
+                border = f"1px solid {hex_rgba(c, 0.3)}"
+                bg     = hex_rgba(c, max(0.05, conf * 0.15))
+
+            conf_pct = int(conf * 100)
+            conf_html = (
+                f"<div style='background:{GREY_BD};border-radius:3px;height:4px;margin-top:6px;'>"
+                f"<div style='width:{conf_pct}%;background:{c};height:4px;border-radius:3px;'></div></div>"
+                f"<span style='font-size:11px;color:{CHARCOAL}88;'>{conf_pct}% OCR confidence</span>"
+            ) if not is_unknown else (
+                f"<span style='font-size:11px;color:{CHARCOAL}55;'>No date found</span>"
+            )
+
+            badge_bg = c if not is_unknown else f"{CHARCOAL}55"
+            st.markdown(
+                f"<div style='border:{border};border-radius:8px;padding:10px 14px;"
+                f"background:{bg};margin-bottom:4px;'>"
+                f"<div style='display:flex;justify-content:space-between;align-items:center;'>"
+                f"<span style='background:{badge_bg};color:{WHITE};font-size:10px;font-weight:700;"
+                f"letter-spacing:0.5px;padding:2px 8px;border-radius:3px;'>{s['type'].upper()}</span>"
+                f"<span style='font-size:11px;color:{CHARCOAL}66;'>{s['id']}</span></div>"
+                f"<div style='font-size:16px;font-weight:700;color:{CHARCOAL};margin:4px 0;'>"
+                f"{date_val if date_val else '—'}</div>"
+                + conf_html +
+                f"</div>", unsafe_allow_html=True
+            )
+            
+            if st.button(
+                "Select",
+                key=f"sel_{fname}_{s['id']}",
+                width="stretch",
+                type="primary" if is_sel else "secondary"
+            ):
+                st.session_state.selected[fname] = s["id"]
+                st.rerun()
 
 # ── Verify ────────────────────────────────────────────────────────────────────
 st.divider()
