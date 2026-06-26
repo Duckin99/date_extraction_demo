@@ -242,7 +242,7 @@ with col_left:
 
     st.image(draw_boxes(img_np, stamps, sel_id), width="stretch")
 
-# ── RIGHT: Editor (Top) + Timeline Container (Bottom) ────────────────────────
+# ── RIGHT: Editor (Top) + Timeline Grid (Bottom) ──────────────────────────────
 with col_right:
     
     if sel_id:
@@ -280,73 +280,70 @@ with col_right:
             f"<div style='padding:16px;background:{GREY};border-radius:6px;"
             f"text-align:center;color:{CHARCOAL}66;font-size:13px;"
             f"border:1px dashed {GREY_BD};margin-bottom:12px;'>"
-            f"Select a stamp below from the timeline to view or edit details.</div>",
+            f"Select a stamp below from the queue to view or edit details.</div>",
             unsafe_allow_html=True
         )
 
     st.divider()
 
-    st.markdown('<p class="label">Stamp Timeline Queue</p>', unsafe_allow_html=True)
+    # 1 & 2. FIX: Removed Scrollable Container and implemented Grid layout (2 per line)
+    st.markdown('<p class="label">Stamp Queue</p>', unsafe_allow_html=True)
     
     stamps_sorted = sorted(stamps, key=sort_key)
     
-    with st.container(height=380):
-        for i, s in enumerate(stamps_sorted):
-            date_val, date_type = primary_date(s)
-            c          = TYPE_COLOR.get(s["type"], CHARCOAL)
-            conf       = max((d.get("ocr_conf",0) for d in s.get("dates",[])), default=0)
-            is_sel     = s["id"] == sel_id
-            is_unknown = date_val is None
+    # Grid chunking: 2 cards per row
+    CARDS_PER_ROW = 2
+    for i in range(0, len(stamps_sorted), CARDS_PER_ROW):
+        chunk = stamps_sorted[i:i + CARDS_PER_ROW]
+        cols = st.columns(CARDS_PER_ROW)
+        
+        for col, s in zip(cols, chunk):
+            with col:
+                date_val, date_type = primary_date(s)
+                c          = TYPE_COLOR.get(s["type"], CHARCOAL)
+                conf       = max((d.get("ocr_conf",0) for d in s.get("dates",[])), default=0)
+                is_sel     = s["id"] == sel_id
+                is_unknown = date_val is None
 
-            if i > 0:
-                prev_date = primary_date(stamps_sorted[i-1])[0]
-                if date_val and prev_date:
-                    st.markdown(
-                        f"<div style='text-align:center;color:{CHARCOAL}33;font-size:14px;"
-                        f"margin:0px;'>&#8595;</div>", unsafe_allow_html=True
-                    )
+                # 3. FIX: Background strictly tied to confidence score, selection uses bold 3px border
+                if is_unknown:
+                    border = f"1.5px dashed {GREY_BD}"
+                    bg     = GREY
+                else:
+                    border = f"3px solid {c}" if is_sel else f"1px solid {hex_rgba(c, 0.3)}"
+                    bg     = hex_rgba(c, max(0.05, conf * 0.15)) # Background never gets overwritten
 
-            if is_unknown:
-                border = f"1.5px dashed {GREY_BD}"
-                bg     = GREY
-            elif is_sel:
-                border = f"2px solid {c}"
-                bg     = hex_rgba(c, 0.12)
-            else:
-                border = f"1px solid {hex_rgba(c, 0.3)}"
-                bg     = hex_rgba(c, max(0.05, conf * 0.15))
+                conf_pct = int(conf * 100)
+                conf_html = (
+                    f"<div style='background:{GREY_BD};border-radius:3px;height:4px;margin-top:6px;'>"
+                    f"<div style='width:{conf_pct}%;background:{c};height:4px;border-radius:3px;'></div></div>"
+                    f"<span style='font-size:11px;color:{CHARCOAL}88;'>{conf_pct}% OCR confidence</span>"
+                ) if not is_unknown else (
+                    f"<span style='font-size:11px;color:{CHARCOAL}55;'>No date found</span>"
+                )
 
-            conf_pct = int(conf * 100)
-            conf_html = (
-                f"<div style='background:{GREY_BD};border-radius:3px;height:4px;margin-top:6px;'>"
-                f"<div style='width:{conf_pct}%;background:{c};height:4px;border-radius:3px;'></div></div>"
-                f"<span style='font-size:11px;color:{CHARCOAL}88;'>{conf_pct}% OCR confidence</span>"
-            ) if not is_unknown else (
-                f"<span style='font-size:11px;color:{CHARCOAL}55;'>No date found</span>"
-            )
-
-            badge_bg = c if not is_unknown else f"{CHARCOAL}55"
-            st.markdown(
-                f"<div style='border:{border};border-radius:8px;padding:10px 14px;"
-                f"background:{bg};margin-bottom:4px;'>"
-                f"<div style='display:flex;justify-content:space-between;align-items:center;'>"
-                f"<span style='background:{badge_bg};color:{WHITE};font-size:10px;font-weight:700;"
-                f"letter-spacing:0.5px;padding:2px 8px;border-radius:3px;'>{s['type'].upper()}</span>"
-                f"<span style='font-size:11px;color:{CHARCOAL}66;'>{s['id']}</span></div>"
-                f"<div style='font-size:16px;font-weight:700;color:{CHARCOAL};margin:4px 0;'>"
-                f"{date_val if date_val else '—'}</div>"
-                + conf_html +
-                f"</div>", unsafe_allow_html=True
-            )
-            
-            if st.button(
-                "Select",
-                key=f"sel_{fname}_{s['id']}",
-                width="stretch",
-                type="primary" if is_sel else "secondary"
-            ):
-                st.session_state.selected[fname] = s["id"]
-                st.rerun()
+                badge_bg = c if not is_unknown else f"{CHARCOAL}55"
+                st.markdown(
+                    f"<div style='border:{border};border-radius:8px;padding:10px 14px;"
+                    f"background:{bg};margin-bottom:8px;'>" # Replaced vertical arrows with grid margins
+                    f"<div style='display:flex;justify-content:space-between;align-items:center;'>"
+                    f"<span style='background:{badge_bg};color:{WHITE};font-size:10px;font-weight:700;"
+                    f"letter-spacing:0.5px;padding:2px 8px;border-radius:3px;'>{s['type'].upper()}</span>"
+                    f"<span style='font-size:11px;color:{CHARCOAL}66;'>{s['id']}</span></div>"
+                    f"<div style='font-size:16px;font-weight:700;color:{CHARCOAL};margin:4px 0;'>"
+                    f"{date_val if date_val else '—'}</div>"
+                    + conf_html +
+                    f"</div>", unsafe_allow_html=True
+                )
+                
+                if st.button(
+                    "Select",
+                    key=f"sel_{fname}_{s['id']}",
+                    width="stretch",
+                    type="primary" if is_sel else "secondary"
+                ):
+                    st.session_state.selected[fname] = s["id"]
+                    st.rerun()
 
 # ── Verify ────────────────────────────────────────────────────────────────────
 st.divider()
