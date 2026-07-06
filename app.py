@@ -1,6 +1,7 @@
 """
 demo_app.py — Passport Stamp Extraction Demo
 Run:  streamlit run demo_app.py
+See README.md for pipeline schema.
 """
 
 import cv2
@@ -17,56 +18,178 @@ def get_pipeline():
 
 pipeline = get_pipeline()
 
-# ── AIA Colour Palette  (https://design.aia.com/colour) ────────────────────
-RED      = "#D31145"
-CHARCOAL = "#333D47"
-PURPLE   = "#4C4794"
-SALMON   = "#FF7A85"
-WHITE    = "#FFFFFF"
-GREY     = "#F4F4F4"
-GREY_BD  = "#E0E0E0"
+# ── Qi Design Tokens  (source: Qi_Foundation_and_component_DESIGN.md) ───────
+# Primary palette
+RED      = "#d31145"   # accent-15  — Digital Red 500, Exit stamps
+PURPLE   = "#4c4794"   # accent-117 — Digital Purple, Entry stamps
+SALMON   = "#ff7a85"   # accent-7   — Digital Salmon, Until dates
+CERISE   = "#ba0361"   # accent-55  — Interactive / highlight accent
+# Neutrals
+TEXT_PRI = "#14181c"   # text-primary
+TEXT_SEC = "#333d47"   # text-secondary (Charcoal)
+TEXT_TER = "#858b91"   # text-tertiary
+BG       = "#ffffff"   # background
+BG_ALT   = "#f5f5f6"   # background-alt
+SURFACE  = "#ebeced"   # surface
+BORDER   = "#adb1b5"   # border
+# Radii (from design token frequency)
+R_SM     = "8px"       # radius-sm-7  — small elements
+R_MD     = "15px"      # radius-md    — cards, inputs, buttons (dominant)
+R_PILL   = "999px"     # radius-lg    — badges, tags
+# Shadows
+ELEV_3   = "0px 1px 2px 0px rgba(0,0,0,0.15)"
+ELEV_7   = "0px 2px 4px 0px rgba(0,0,0,0.08)"
+ELEV_13  = "0px 2px 6px 0px rgba(0,0,0,0.06), 0px 5px 8px 0px rgba(0,0,0,0.04)"
 
 TYPE_COLOR = {"Entry": PURPLE, "Exit": RED, "Until": SALMON}
 
 st.set_page_config(page_title="Passport Stamp Review", layout="wide")
-st.markdown(f"""<style>
-  .block-container {{ padding-top: 1.5rem; padding-bottom: 2rem; }}
-  p, label, span {{ color: {CHARCOAL}; font-family: 'Inter', sans-serif; }}
-  h1, h2, h3 {{ color: {CHARCOAL} !important; }}
-  .label {{
-    font-size: 11px; font-weight: 700; letter-spacing: 1px;
-    text-transform: uppercase; color: {CHARCOAL}88; margin-bottom: 6px;
+
+st.markdown(f"""
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Open+Sans:wght@400;600;700&display=swap');
+
+  /* ── Base ── */
+  .block-container {{ padding-top: 0 !important; padding-bottom: 2rem; max-width: 100% !important; }}
+  html, body, [class*="css"] {{
+    font-family: 'Open Sans', sans-serif;
+    color: {TEXT_SEC};
+    background: {BG};
   }}
-  /* Force White & Bold text on primary buttons */
-  button[kind="primary"] p {{
-    color: {WHITE} !important;
-    font-weight: 700 !important;
+  p, label, span {{ color: {TEXT_SEC}; line-height: 24px; }}
+  h1, h2, h3 {{ color: {TEXT_PRI} !important; font-weight: 700; }}
+
+  /* ── Top nav bar — AIA red stripe ── */
+  .aia-topbar {{
+    background: {RED};
+    padding: 12px 24px;
+    margin: -1rem -1rem 1.5rem -1rem;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }}
+  .aia-topbar-title {{
+    color: {BG};
+    font-size: 16px;
+    font-weight: 700;
+    letter-spacing: 0.2px;
+  }}
+  .aia-topbar-sub {{
+    color: rgba(255,255,255,0.75);
+    font-size: 12px;
+    font-weight: 400;
+  }}
+
+  /* ── Qi Card ── */
+  .qi-card {{
+    background: {BG};
+    border: 1px solid {SURFACE};
+    border-radius: {R_MD};
+    padding: 16px;
+    box-shadow: {ELEV_13};
+    margin-bottom: 8px;
+  }}
+  .qi-card-selected {{
+    background: {BG};
+    border-radius: {R_MD};
+    padding: 16px;
+    box-shadow: {ELEV_13};
+    margin-bottom: 8px;
+  }}
+
+  /* ── Qi Badge / pill ── */
+  .qi-badge {{
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: {R_PILL};
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.4px;
+    text-transform: uppercase;
+    color: {BG};
+  }}
+
+  /* ── Label overline ── */
+  .qi-overline {{
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 1.2px;
+    text-transform: uppercase;
+    color: {TEXT_TER};
+    margin-bottom: 8px;
+  }}
+
+  /* ── Buttons — Qi style ── */
+  .stButton > button {{
+    border-radius: {R_MD} !important;
+    font-family: 'Open Sans', sans-serif !important;
+    font-weight: 600 !important;
+    font-size: 14px !important;
+    padding: 8px 16px !important;
+    transition: background 0.15s, box-shadow 0.15s;
   }}
   button[kind="primary"] {{
-    background-color: {RED} !important;
+    background: {RED} !important;
     border-color: {RED} !important;
+    color: {BG} !important;
+    box-shadow: {ELEV_7} !important;
   }}
   button[kind="primary"]:hover {{
-    background-color: #B01039 !important;
-    border-color: #B01039 !important;
+    background: #b01039 !important;
+    border-color: #b01039 !important;
+    box-shadow: {ELEV_13} !important;
   }}
-</style>""", unsafe_allow_html=True)
+  button[kind="secondary"] {{
+    background: {BG} !important;
+    border: 1px solid {BORDER} !important;
+    color: {TEXT_SEC} !important;
+  }}
+  button[kind="secondary"]:hover {{
+    border-color: {RED} !important;
+    color: {RED} !important;
+  }}
+
+  /* ── Sidebar ── */
+  [data-testid="stSidebar"] {{
+    background: {BG} !important;
+    border-right: 1px solid {SURFACE};
+  }}
+  [data-testid="stSidebar"] .stRadio label {{
+    font-size: 13px !important;
+    color: {TEXT_SEC} !important;
+    padding: 6px 0;
+  }}
+
+  /* ── Divider ── */
+  hr {{ border-color: {SURFACE} !important; margin: 16px 0 !important; }}
+
+  /* ── Data editor ── */
+  .stDataFrame, [data-testid="stDataEditorContainer"] {{
+    border-radius: {R_MD} !important;
+    border: 1px solid {SURFACE} !important;
+    overflow: hidden;
+  }}
+
+  /* ── Info box ── */
+  .stAlert {{ border-radius: {R_MD} !important; }}
+</style>
+""", unsafe_allow_html=True)
 
 
-# ── Helpers ──────────────────────────────────────────────────────────────────
+# ── Helpers ───────────────────────────────────────────────────────────────────
 def to_rgb(h):
     h = h.lstrip("#")
     return int(h[0:2],16), int(h[2:4],16), int(h[4:6],16)
 
-def hex_rgba(h, alpha):
+def hex_rgba(h, a):
     r, g, b = to_rgb(h)
-    return f"rgba({r},{g},{b},{alpha:.2f})"
+    return f"rgba({r},{g},{b},{a:.2f})"
 
 def draw_boxes(img, stamps, sel_id):
     out = img.copy()
     for s in stamps:
         x1, y1, x2, y2 = s["box"]
-        c   = to_rgb(TYPE_COLOR.get(s["type"], CHARCOAL))
+        c   = to_rgb(TYPE_COLOR.get(s["type"], TEXT_SEC))
         sel = s["id"] == sel_id
         ov  = out.copy()
         cv2.rectangle(ov, (x1,y1), (x2,y2), c, 4 if sel else 2)
@@ -99,7 +222,7 @@ def primary_date(s):
     best = max(dates, key=lambda d: d.get("ocr_conf", 0))
     return best["value"], best["type"]
 
-def to_date(val):
+def to_date_str(val):
     if val is None:
         return None
     if isinstance(val, (datetime, date)):
@@ -114,17 +237,12 @@ def sync_edits(edited_df, fname, sel_id):
             continue
         updated = []
         for _, row in edited_df.iterrows():
-            val  = to_date(row.get("Date"))
+            val  = to_date_str(row.get("Date"))
             orig = next((d for d in s["dates"] if d["type"] == row.get("Type")), {})
-            updated.append({
-                "value":    val,
-                "type":     row.get("Type", "Unknown"),
-                "ocr_conf": orig.get("ocr_conf", 1.0 if val else 0.0),
-            })
-        if s["dates"] != updated:
-            s["dates"] = updated
-            return True
-    return False
+            updated.append({"value": val, "type": row.get("Type","Unknown"),
+                            "ocr_conf": orig.get("ocr_conf", 0.0)})
+        s["dates"] = updated
+        break
 
 
 # ── Session state ─────────────────────────────────────────────────────────────
@@ -133,58 +251,87 @@ for k, v in [("results",{}), ("selected",{}), ("verified",set())]:
         st.session_state[k] = v
 
 
+# ── Top nav bar ───────────────────────────────────────────────────────────────
+st.markdown(
+    f"<div class='aia-topbar'>"
+    f"<div>"
+    f"<div class='aia-topbar-title'>Passport Stamp Review</div>"
+    f"<div class='aia-topbar-sub'>Entry / Exit Detection &amp; Verification</div>"
+    f"</div>"
+    f"</div>",
+    unsafe_allow_html=True
+)
+
+
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.markdown(f"<h3 style='color:{RED};margin-bottom:0;'>Stamp Review</h3>", unsafe_allow_html=True)
-    st.markdown(f"<p style='font-size:12px;color:{CHARCOAL}88;margin-top:2px;'>"
-                f"Passport Entry / Exit Detection</p>", unsafe_allow_html=True)
-    st.divider()
+    st.markdown(f"<p class='qi-overline' style='margin-top:8px;'>Workspace</p>",
+                unsafe_allow_html=True)
 
     uploads = st.file_uploader("Upload passport images", type=["jpg","jpeg","png"],
-                               accept_multiple_files=True)
+                               accept_multiple_files=True, label_visibility="collapsed")
 
     if uploads:
         done  = len(st.session_state.verified)
         total = len(uploads)
-        st.markdown(f"**Progress: {done} / {total} verified**")
-        st.progress(done / total)
-        st.divider()
-
-        file_names = [f.name for f in uploads]
-        active_file = st.radio(
-            "Documents",
-            options=file_names,
-            format_func=lambda n: (
-                f"[Done] {n}" if n in st.session_state.verified else f"[Pending] {n}"
-            ),
-            label_visibility="collapsed",
+        st.markdown(
+            f"<div style='background:{BG_ALT};border-radius:{R_MD};padding:12px 14px;"
+            f"margin-bottom:12px;box-shadow:{ELEV_3};'>"
+            f"<div style='font-size:11px;color:{TEXT_TER};font-weight:600;"
+            f"letter-spacing:0.8px;text-transform:uppercase;'>Progress</div>"
+            f"<div style='font-size:20px;font-weight:700;color:{TEXT_PRI};'>"
+            f"{done}<span style='font-size:13px;color:{TEXT_TER};font-weight:400;'> / {total}</span></div>"
+            f"<div style='background:{SURFACE};border-radius:{R_PILL};height:4px;margin-top:6px;'>"
+            f"<div style='width:{int(done/total*100) if total else 0}%;background:{RED};"
+            f"height:4px;border-radius:{R_PILL};'></div></div>"
+            f"</div>", unsafe_allow_html=True
         )
 
+        st.markdown(f"<p class='qi-overline'>Documents</p>", unsafe_allow_html=True)
+        file_names = [f.name for f in uploads]
+        active_file = st.radio(
+            "docs", options=file_names,
+            format_func=lambda n: (f"✓  {n}" if n in st.session_state.verified else f"   {n}"),
+            label_visibility="collapsed",
+        )
+    else:
+        active_file = None
 
-# ── Main ──────────────────────────────────────────────────────────────────────
+
+# ── Empty state ───────────────────────────────────────────────────────────────
 if not uploads:
-    st.markdown("## Passport Stamp Extraction")
-    st.markdown(f"<p style='color:{CHARCOAL}88;'>Upload passport images from the sidebar to begin.</p>",
-                unsafe_allow_html=True)
-    st.stop()
-
-if len(st.session_state.verified) == len(uploads):
     st.markdown(
-        f"<div style='background:{hex_rgba(RED,0.06)};border:1px solid {hex_rgba(RED,0.3)};"
-        f"border-radius:8px;padding:24px;text-align:center;margin-top:40px;'>"
-        f"<div style='font-size:20px;font-weight:700;color:{RED};'>All Documents Verified</div>"
-        f"<div style='font-size:13px;color:{CHARCOAL}88;margin-top:6px;'>"
-        f"{len(uploads)} document(s) reviewed successfully.</div>"
+        f"<div style='margin:80px auto;max-width:480px;text-align:center;'>"
+        f"<div style='font-size:32px;font-weight:700;color:{TEXT_PRI};margin-bottom:12px;'>"
+        f"Upload a document to begin</div>"
+        f"<p style='color:{TEXT_TER};font-size:15px;line-height:24px;'>"
+        f"Select one or more passport images from the sidebar to start stamp detection and date verification.</p>"
         f"</div>", unsafe_allow_html=True
     )
     st.stop()
 
+# ── All verified ──────────────────────────────────────────────────────────────
+if len(st.session_state.verified) == len(uploads):
+    st.markdown(
+        f"<div style='margin:80px auto;max-width:480px;text-align:center;"
+        f"background:{BG};border:1px solid {SURFACE};border-radius:{R_MD};"
+        f"padding:40px 32px;box-shadow:{ELEV_13};'>"
+        f"<div style='width:48px;height:48px;background:{hex_rgba(RED,0.1)};border-radius:{R_PILL};"
+        f"margin:0 auto 16px;display:flex;align-items:center;justify-content:center;'>"
+        f"<span style='color:{RED};font-size:22px;font-weight:700;'>✓</span></div>"
+        f"<div style='font-size:22px;font-weight:700;color:{TEXT_PRI};'>All documents verified</div>"
+        f"<p style='color:{TEXT_TER};margin-top:8px;'>{len(uploads)} document(s) reviewed successfully.</p>"
+        f"</div>", unsafe_allow_html=True
+    )
+    st.stop()
+
+# ── Load & process ────────────────────────────────────────────────────────────
 file = next(f for f in uploads if f.name == active_file)
 fname = file.name
 
 if fname not in st.session_state.results:
     img_np = np.array(Image.open(file).convert("RGB"))
-    with st.spinner("Processing document..."):
+    with st.spinner("Detecting stamps..."):
         stamps = pipeline.process(img_np)
     st.session_state.results[fname]  = stamps
     st.session_state.selected[fname] = None
@@ -193,65 +340,145 @@ stamps = st.session_state.results[fname]
 sel_id = st.session_state.selected.get(fname)
 img_np = np.array(Image.open(file).convert("RGB"))
 
+# ── Document header ───────────────────────────────────────────────────────────
+n_entry   = sum(1 for s in stamps if s["type"] == "Entry")
+n_exit    = sum(1 for s in stamps if s["type"] == "Exit")
+n_unknown = sum(1 for s in stamps if primary_date(s)[0] is None)
+is_verified = fname in st.session_state.verified
+
+header_right = ""
+if is_verified:
+    header_right = (f"<span style='background:{hex_rgba(RED,0.08)};color:{RED};"
+                    f"border-radius:{R_PILL};padding:3px 12px;font-size:12px;font-weight:700;'>"
+                    f"Verified</span>")
+
+badges = (
+    f"<span class='qi-badge' style='background:{PURPLE};'>{n_entry} Entry</span> "
+    f"<span class='qi-badge' style='background:{RED};'>{n_exit} Exit</span>"
+    + (f" <span class='qi-badge' style='background:{TEXT_TER};'>{n_unknown} Unknown</span>"
+       if n_unknown else "")
+)
+
 st.markdown(
-    f"<div style='margin-bottom:12px;'>"
-    f"<span style='font-size:18px;font-weight:700;color:{CHARCOAL};'>{fname}</span>"
-    + (f"&nbsp;<span style='background:{hex_rgba(RED,0.1)};color:{RED};font-size:12px;"
-       f"font-weight:600;padding:2px 8px;border-radius:3px;'>Verified</span>"
-       if fname in st.session_state.verified else "") +
-    f"</div>", unsafe_allow_html=True
+    f"<div style='display:flex;justify-content:space-between;align-items:center;"
+    f"margin-bottom:16px;padding-bottom:12px;border-bottom:1px solid {SURFACE};'>"
+    f"<div>"
+    f"<div style='font-size:18px;font-weight:700;color:{TEXT_PRI};'>{fname}</div>"
+    f"<div style='margin-top:6px;display:flex;gap:6px;'>{badges}</div>"
+    f"</div>{header_right}</div>", unsafe_allow_html=True
 )
 
 if not stamps:
     st.info("No stamps detected in this document.")
     st.stop()
 
-n_entry = sum(1 for s in stamps if s["type"] == "Entry")
-n_exit  = sum(1 for s in stamps if s["type"] == "Exit")
-st.markdown(
-    f"<div style='background:{GREY};border-radius:6px;padding:8px 16px;"
-    f"display:flex;gap:12px;align-items:center;margin-bottom:14px;'>"
-    f"<span style='font-size:11px;font-weight:700;letter-spacing:1px;color:{CHARCOAL}66;'>DETECTED</span>"
-    f"<span style='background:{PURPLE};color:{WHITE};padding:2px 10px;"
-    f"border-radius:3px;font-size:12px;font-weight:700;'>{n_entry} Entry</span>"
-    f"<span style='background:{RED};color:{WHITE};padding:2px 10px;"
-    f"border-radius:3px;font-size:12px;font-weight:700;'>{n_exit} Exit</span>"
-    f"</div>", unsafe_allow_html=True
-)
-
 col_left, col_right = st.columns([1.2, 1], gap="large")
 
-# ── LEFT: Document image ──────────────────────────────────────────────────────
+# ── LEFT: Document view ───────────────────────────────────────────────────────
 with col_left:
-    st.markdown('<p class="label">Document View</p>', unsafe_allow_html=True)
+    st.markdown(f'<p class="qi-overline">Document View</p>', unsafe_allow_html=True)
 
     if sel_id:
         sel = next(s for s in stamps if s["id"] == sel_id)
-        c   = TYPE_COLOR.get(sel["type"], CHARCOAL)
+        c   = TYPE_COLOR.get(sel["type"], TEXT_SEC)
         st.markdown(
-            f"<div style='border-left:3px solid {c};padding:6px 12px;"
-            f"background:{hex_rgba(c,0.08)};border-radius:0 4px 4px 0;margin-bottom:8px;'>"
-            f"<strong style='color:{c};'>{sel['id']} — {sel['type']}</strong>"
-            f"&nbsp;<span style='font-size:12px;color:{CHARCOAL}88;'>"
-            f"Detection {sel['det_conf']:.0%}</span></div>",
+            f"<div style='border-left:3px solid {c};padding:8px 14px;"
+            f"background:{hex_rgba(c,0.06)};border-radius:0 {R_SM} {R_SM} 0;"
+            f"margin-bottom:10px;box-shadow:{ELEV_3};'>"
+            f"<div style='font-weight:700;color:{c};font-size:14px;'>"
+            f"{sel['id']} &mdash; {sel['type']} Stamp</div>"
+            f"<div style='font-size:12px;color:{TEXT_TER};margin-top:2px;'>"
+            f"Detection confidence: {sel['det_conf']:.0%}</div></div>",
             unsafe_allow_html=True
         )
         st.image(stamp_crop(img_np, sel["box"]), width="stretch")
-        st.markdown(f"<p style='font-size:11px;color:{CHARCOAL}44;margin-bottom:6px;'>"
-                    f"Full document context</p>", unsafe_allow_html=True)
+        st.markdown(
+            f"<p style='font-size:11px;color:{TEXT_TER};margin:4px 0 8px;'>"
+            f"Full document context below</p>", unsafe_allow_html=True
+        )
 
     st.image(draw_boxes(img_np, stamps, sel_id), width="stretch")
 
-# ── RIGHT: Editor (Top) + Timeline Grid (Bottom) ──────────────────────────────
+
+# ── RIGHT: Timeline + editor ──────────────────────────────────────────────────
 with col_right:
-    
+    st.markdown(f'<p class="qi-overline">Timeline</p>', unsafe_allow_html=True)
+
+    sorted_stamps = sorted(stamps, key=sort_key)
+
+    for i, s in enumerate(sorted_stamps):
+        date_val, date_type = primary_date(s)
+        c          = TYPE_COLOR.get(s["type"], TEXT_SEC)
+        conf       = max((d.get("ocr_conf",0) for d in s.get("dates",[])), default=0)
+        is_sel     = s["id"] == sel_id
+        is_unknown = date_val is None
+        conf_pct   = int(conf * 100)
+
+        # Arrow connector between consecutive dated entries
+        if i > 0:
+            prev_val = primary_date(sorted_stamps[i-1])[0]
+            if date_val and prev_val:
+                st.markdown(
+                    f"<div style='text-align:center;color:{BORDER};font-size:14px;"
+                    f"margin:2px 0;line-height:1;'>&#8595;</div>",
+                    unsafe_allow_html=True
+                )
+
+        # Card border & background
+        if is_unknown:
+            border = f"1.5px dashed {BORDER}"
+            bg     = BG_ALT
+            shadow = ELEV_3
+        elif is_sel:
+            border = f"2px solid {c}"
+            bg     = hex_rgba(c, 0.06)
+            shadow = ELEV_13
+        else:
+            border = f"1px solid {hex_rgba(c,0.25)}"
+            bg     = BG
+            shadow = ELEV_7
+
+        badge_bg = c if not is_unknown else TEXT_TER
+        conf_bar_html = (
+            f"<div style='background:{SURFACE};border-radius:{R_PILL};height:3px;margin-top:8px;'>"
+            f"<div style='width:{conf_pct}%;background:{c};height:3px;border-radius:{R_PILL};'>"
+            f"</div></div>"
+            f"<span style='font-size:11px;color:{TEXT_TER};'>{conf_pct}% OCR confidence</span>"
+        ) if not is_unknown else (
+            f"<span style='font-size:12px;color:{TEXT_TER};'>No date detected</span>"
+        )
+
+        st.markdown(
+            f"<div style='border:{border};border-radius:{R_MD};padding:12px 16px;"
+            f"background:{bg};box-shadow:{shadow};margin-bottom:4px;'>"
+            f"<div style='display:flex;justify-content:space-between;align-items:flex-start;'>"
+            f"<div>"
+            f"<span class='qi-badge' style='background:{badge_bg};'>{s['type']}</span>"
+            f"</div>"
+            f"<span style='font-size:11px;color:{TEXT_TER};'>{s['id']}</span>"
+            f"</div>"
+            f"<div style='font-size:18px;font-weight:700;color:{TEXT_PRI};margin:8px 0 2px;'>"
+            f"{date_val if date_val else '&mdash;'}</div>"
+            + conf_bar_html +
+            f"</div>", unsafe_allow_html=True
+        )
+
+        btn_label = "Add Date" if is_unknown else "Edit"
+        btn_type  = "primary" if is_unknown else "secondary"
+        if st.button(btn_label, key=f"sel_{fname}_{s['id']}",
+                     width="stretch", type=btn_type):
+            st.session_state.selected[fname] = s["id"]
+
+    st.divider()
+
+    # ── Editor ────────────────────────────────────────────────────────────
     if sel_id:
         sel = next(s for s in stamps if s["id"] == sel_id)
-        c   = TYPE_COLOR.get(sel["type"], CHARCOAL)
+        c   = TYPE_COLOR.get(sel["type"], TEXT_SEC)
         st.markdown(
-            f"<div style='border-left:3px solid {c};padding:4px 10px;margin-bottom:8px;'>"
-            f"<strong style='color:{c};font-size:13px;'>Editing Metadata: {sel_id}</strong></div>",
-            unsafe_allow_html=True
+            f"<div style='border-left:3px solid {c};padding:4px 12px;margin-bottom:10px;'>"
+            f"<span style='font-weight:700;color:{c};font-size:13px;'>Editing {sel_id}</span>"
+            f"</div>", unsafe_allow_html=True
         )
         rows = []
         for d in sel.get("dates", []):
@@ -262,9 +489,7 @@ with col_right:
 
         edited = st.data_editor(
             pd.DataFrame(rows) if rows else pd.DataFrame(columns=["Type","Date","Confidence"]),
-            num_rows="dynamic",
-            width="stretch",
-            hide_index=True,
+            num_rows="dynamic", width="stretch", hide_index=True,
             column_config={
                 "Type": st.column_config.SelectboxColumn(
                     options=["Entry","Exit","Until","Unknown"], required=True),
@@ -273,82 +498,20 @@ with col_right:
             },
             key=f"ed_{fname}_{sel_id}",
         )
-        if sync_edits(edited, fname, sel_id):
-            st.rerun()
+        sync_edits(edited, fname, sel_id)
     else:
         st.markdown(
-            f"<div style='padding:16px;background:{GREY};border-radius:6px;"
-            f"text-align:center;color:{CHARCOAL}66;font-size:13px;"
-            f"border:1px dashed {GREY_BD};margin-bottom:12px;'>"
-            f"Select a stamp below from the queue to view or edit details.</div>",
-            unsafe_allow_html=True
+            f"<div style='padding:20px 16px;background:{BG_ALT};border-radius:{R_MD};"
+            f"text-align:center;border:1.5px dashed {BORDER};'>"
+            f"<p style='color:{TEXT_TER};font-size:13px;margin:0;'>"
+            f"Select a stamp from the timeline to review or edit its date.</p>"
+            f"</div>", unsafe_allow_html=True
         )
-
-    st.divider()
-
-    # 1 & 2. FIX: Removed Scrollable Container and implemented Grid layout (2 per line)
-    st.markdown('<p class="label">Stamp Queue</p>', unsafe_allow_html=True)
-    
-    stamps_sorted = sorted(stamps, key=sort_key)
-    
-    # Grid chunking: 2 cards per row
-    CARDS_PER_ROW = 2
-    for i in range(0, len(stamps_sorted), CARDS_PER_ROW):
-        chunk = stamps_sorted[i:i + CARDS_PER_ROW]
-        cols = st.columns(CARDS_PER_ROW)
-        
-        for col, s in zip(cols, chunk):
-            with col:
-                date_val, date_type = primary_date(s)
-                c          = TYPE_COLOR.get(s["type"], CHARCOAL)
-                conf       = max((d.get("ocr_conf",0) for d in s.get("dates",[])), default=0)
-                is_sel     = s["id"] == sel_id
-                is_unknown = date_val is None
-
-                # 3. FIX: Background strictly tied to confidence score, selection uses bold 3px border
-                if is_unknown:
-                    border = f"1.5px dashed {GREY_BD}"
-                    bg     = GREY
-                else:
-                    border = f"3px solid {c}" if is_sel else f"1px solid {hex_rgba(c, 0.3)}"
-                    bg     = hex_rgba(c, max(0.05, conf * 0.15)) # Background never gets overwritten
-
-                conf_pct = int(conf * 100)
-                conf_html = (
-                    f"<div style='background:{GREY_BD};border-radius:3px;height:4px;margin-top:6px;'>"
-                    f"<div style='width:{conf_pct}%;background:{c};height:4px;border-radius:3px;'></div></div>"
-                    f"<span style='font-size:11px;color:{CHARCOAL}88;'>{conf_pct}% OCR confidence</span>"
-                ) if not is_unknown else (
-                    f"<span style='font-size:11px;color:{CHARCOAL}55;'>No date found</span>"
-                )
-
-                badge_bg = c if not is_unknown else f"{CHARCOAL}55"
-                st.markdown(
-                    f"<div style='border:{border};border-radius:8px;padding:10px 14px;"
-                    f"background:{bg};margin-bottom:8px;'>" # Replaced vertical arrows with grid margins
-                    f"<div style='display:flex;justify-content:space-between;align-items:center;'>"
-                    f"<span style='background:{badge_bg};color:{WHITE};font-size:10px;font-weight:700;"
-                    f"letter-spacing:0.5px;padding:2px 8px;border-radius:3px;'>{s['type'].upper()}</span>"
-                    f"<span style='font-size:11px;color:{CHARCOAL}66;'>{s['id']}</span></div>"
-                    f"<div style='font-size:16px;font-weight:700;color:{CHARCOAL};margin:4px 0;'>"
-                    f"{date_val if date_val else '—'}</div>"
-                    + conf_html +
-                    f"</div>", unsafe_allow_html=True
-                )
-                
-                if st.button(
-                    "Select",
-                    key=f"sel_{fname}_{s['id']}",
-                    width="stretch",
-                    type="primary" if is_sel else "secondary"
-                ):
-                    st.session_state.selected[fname] = s["id"]
-                    st.rerun()
 
 # ── Verify ────────────────────────────────────────────────────────────────────
 st.divider()
 if fname not in st.session_state.verified:
-    if st.button("Mark Document as Verified", type="primary",
+    if st.button("Mark as Verified", type="primary",
                  key=f"verify_{fname}", width="stretch"):
         st.session_state.verified.add(fname)
         st.rerun()
