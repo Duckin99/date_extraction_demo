@@ -459,14 +459,25 @@ def main_page():
 
         # ── Upload handler ───────────────────────────────────────────────
         def handle_upload(e: events.UploadEventArguments):
-            img = Image.open(io.BytesIO(e.content.read())).convert("RGB")
+            # In NiceGUI, e.content is the BinaryIO object for the uploaded file
+            # We must use e.content.read() to get the bytes
+            img_data = e.content.read()
+            img = Image.open(io.BytesIO(img_data)).convert("RGB")
             img_np = np.array(img)
+            
+            # Run pipeline
             stamps = pipeline.process(img_np)
             docs[e.name] = {"img": img, "stamps": stamps}
+            
+            # Set active if this is the first doc
             if state["active"] is None:
                 state["active"] = e.name
+            
+            # Refresh UI
             render_sidebar()
             render_main.refresh()
+
+        upload.on_upload(handle_upload)
 
         upload.on_upload(handle_upload)
 
