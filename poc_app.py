@@ -458,9 +458,10 @@ def main_page():
 
 
         # ── Upload handler ───────────────────────────────────────────────
-        def handle_upload(e: events.UploadEventArguments):
-            # In NiceGUI 3.0+, the uploaded file is stored in e.file, not e.content
-            img_data = e.file.read()
+        async def handle_upload(e: events.UploadEventArguments):
+            # In NiceGUI 3.0+, use e.file and await the read() method
+            img_data = await e.file.read()
+            
             img = Image.open(io.BytesIO(img_data)).convert("RGB")
             img_np = np.array(img)
             
