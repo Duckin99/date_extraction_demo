@@ -459,9 +459,8 @@ def main_page():
 
         # ── Upload handler ───────────────────────────────────────────────
         def handle_upload(e: events.UploadEventArguments):
-            # In NiceGUI, e.content is the BinaryIO object for the uploaded file
-            # We must use e.content.read() to get the bytes
-            img_data = e.content.read()
+            # In NiceGUI 3.0+, the uploaded file is stored in e.file, not e.content
+            img_data = e.file.read()
             img = Image.open(io.BytesIO(img_data)).convert("RGB")
             img_np = np.array(img)
             
@@ -476,8 +475,6 @@ def main_page():
             # Refresh UI
             render_sidebar()
             render_main.refresh()
-
-        upload.on_upload(handle_upload)
 
         upload.on_upload(handle_upload)
 
