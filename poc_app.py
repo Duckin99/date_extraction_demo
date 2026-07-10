@@ -1,13 +1,6 @@
 """
 app.py — AIA Immigration Stamp Review
-Run: python app.py   →  http://localhost:8080
-
-Underwriter workflow this app automates:
-  Manually scanning each passport page for entry/exit stamps and building
-  a chronological travel timeline, one stamp at a time.
-
-This app runs detection + OCR automatically and gives the underwriter a
-single prioritized view: which stamps to trust, which to double-check.
+Run: python app.py   ->  http://localhost:8080
 
 Pipeline integration
 --------------------
@@ -27,7 +20,7 @@ from pipeline import DocumentPipeline
 pipeline = DocumentPipeline()
 
 # ── Qi Design Tokens ──────────────────────────────────────────────────────
-RED, PURPLE, SALMON = "#d31145", "#4c4794", "#ff7a85"
+RED, PURPLE, SALMON, CERISE = "#d31145", "#4c4794", "#ff7a85", "#ba0361"
 TEXT_PRI, TEXT_SEC, TEXT_TER = "#14181c", "#333d47", "#858b91"
 BG, BG_ALT, SURFACE, BORDER = "#ffffff", "#f5f5f6", "#ebeced", "#adb1b5"
 R_MD, R_PILL = "15px", "999px"
@@ -35,33 +28,31 @@ ELEV_7  = "0px 2px 4px rgba(0,0,0,0.08)"
 ELEV_13 = "0px 2px 6px rgba(0,0,0,0.06), 0px 5px 8px rgba(0,0,0,0.04)"
 
 TYPE_COLOR = {"Entry": PURPLE, "Exit": RED}
-REVIEW_THRESHOLD = 0.75  # cumulative confidence below this is flagged
+REVIEW_THRESHOLD = 0.75   # OCR confidence below this is flagged
+VW, VH = 680, 480         # fixed zoom-viewport pixel size
 
 
-# ── Domain helpers ──────────────────────────────────────────────────────────
-def cumulative_conf(s):
-    """det_conf x best ocr_conf — the combined trust score for a stamp."""
-    dates = s.get("dates", [])
-    ocr = max((d.get("ocr_conf", 0) for d in dates), default=0)
-    return round(s.get("det_conf", 0) * (ocr if dates else 1), 3)
-
-def primary_date(s):
+# ── Domain helpers ───────────────────────────────────────────────────────────
+def primary_entry(s):
+    """Return the best Entry/Exit date dict for a stamp, or None."""
     dates = [d for d in s.get("dates", []) if d.get("value") and d["type"] in ("Entry", "Exit")]
     if not dates:
-        return None, None
-    best = max(dates, key=lambda d: d.get("ocr_conf", 0))
-    return best["value"], best["type"]
+        return None
+    return max(dates, key=lambda d: (d.get("ocr_conf") or 0))
 
 def needs_review(s):
-    val, _ = primary_date(s)
-    return val is None or cumulative_conf(s) < REVIEW_THRESHOLD
+    entry = primary_entry(s)
+    if entry is None:
+        return True
+    conf = entry.get("ocr_conf")
+    return conf is not None and conf < REVIEW_THRESHOLD
 
 def chrono_key(s):
-    val, _ = primary_date(s)
-    if not val:
+    entry = primary_entry(s)
+    if not entry:
         return datetime.max
     try:
-        return datetime.strptime(val, "%d %b %Y")
+        return datetime.strptime(entry["value"], "%d %b %Y")
     except Exception:
         return datetime.max
 
@@ -78,7 +69,6 @@ def to_date_str(val):
     return None
 
 def to_html_date(val):
-    """DD MMM YYYY -> YYYY-MM-DD for <input type=date>."""
     if not val:
         return ""
     try:
@@ -86,417 +76,17 @@ def to_html_date(val):
     except Exception:
         return ""
 
-
-# ── Page ──────────────────────────────────────────────────────────────────
-@ui.page("/")
-def main_page():
-    # Per-browser-session state (fresh on each page load)
-    docs = {}          # filename -> {"img": PIL.Image, "stamps": [...]}
-    state = {"active": None, "selected": None, "sort_mode": "Timeline"}
-    verified = set()
-
-    ui.add_head_html("""
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@400;600;700&display=swap" rel="stylesheet">
-    <style>
-      body { font-family:'Open Sans',sans-serif; background:#ffffff; margin:0; }
-      .qi-card { transition: box-shadow .15s, border-color .15s; cursor:pointer; }
-      .qi-card:hover { box-shadow: %s; }
-      ::-webkit-scrollbar { width:6px; }
-      ::-webkit-scrollbar-thumb { background:%s; border-radius:4px; }
-    </style>
-    """ % (ELEV_13, BORDER))
-
-    # ── Top bar ──────────────────────────────────────────────────────────
-    with ui.row().classes("w-full items-center").style(
-        f"background:{RED};padding:14px 28px;margin:0;"
-    ):
-        ui.label("Immigration Stamp Review").style(
-            "color:white;font-weight:700;font-size:17px;"
-        )
-        ui.label("Automated entry / exit timeline extraction").style(
-            "color:rgba(255,255,255,.75);font-size:12px;margin-left:12px;"
-        )
-
-    with ui.row().classes("w-full no-wrap").style("padding:20px 28px;gap:24px;align-items:flex-start;"):
-
-        # ── Sidebar ──────────────────────────────────────────────────────
-        with ui.column().style("width:300px;flex-shrink:0;gap:12px;"):
-            ui.label("WORKSPACE").style(
-                f"font-size:11px;font-weight:700;letter-spacing:1.2px;color:{TEXT_TER};"
-            )
-
-            upload = ui.upload(
-                label="Upload passport images",
-                multiple=True, auto_upload=True,
-            ).props("accept=.jpg,.jpeg,.png flat").classes("w-full").style(
-                f"border:1.5px dashed {BORDER};border-radius:{R_MD};"
-            )
-
-            doc_list = ui.column().classes("w-full").style("gap:6px;")
-            export_slot = ui.column().classes("w-full")
-
-        # ── Main content ─────────────────────────────────────────────────
-        main = ui.column().classes("flex-1").style("gap:0;min-width:0;")
-
-        # ── Renderers ────────────────────────────────────────────────────
-        def render_sidebar():
-            doc_list.clear()
-            with doc_list:
-                for name, d in docs.items():
-                    stamps = d["stamps"]
-                    avg_conf = (sum(cumulative_conf(s) for s in stamps) / len(stamps)
-                                if stamps else 0)
-                    is_active = name == state["active"]
-                    is_done = name in verified
-                    bg = hex_rgba(RED, 0.06) if is_active else BG
-                    border = f"1.5px solid {RED}" if is_active else f"1px solid {SURFACE}"
-
-                    def select_doc(n=name):
-                        state["active"] = n
-                        state["selected"] = None
-                        render_sidebar()
-                        render_main()
-
-                    with ui.card().style(
-                        f"width:100%;background:{bg};border:{border};border-radius:{R_MD};"
-                        f"padding:10px 12px;box-shadow:none;"
-                    ).classes("qi-card").on("click", select_doc):
-                        with ui.row().classes("items-center justify-between w-full").style("gap:6px;"):
-                            ui.label(name).style(
-                                f"font-size:13px;font-weight:600;color:{TEXT_PRI};"
-                                f"overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:170px;"
-                            )
-                            if is_done:
-                                ui.label("Verified").style(
-                                    f"font-size:10px;font-weight:700;color:{RED};"
-                                )
-                        with ui.row().classes("items-center w-full").style("gap:6px;margin-top:4px;"):
-                            bar_color = RED if avg_conf < REVIEW_THRESHOLD else PURPLE
-                            with ui.element("div").style(
-                                f"flex:1;background:{SURFACE};border-radius:{R_PILL};height:4px;"
-                            ):
-                                ui.element("div").style(
-                                    f"width:{int(avg_conf*100)}%;background:{bar_color};"
-                                    f"height:4px;border-radius:{R_PILL};"
-                                )
-                            ui.label(f"{avg_conf:.0%}").style(
-                                f"font-size:11px;color:{TEXT_TER};"
-                            )
-
-            export_slot.clear()
-            if verified:
-                with export_slot:
-                    ui.button("Export Verified Records", on_click=do_export).props(
-                        "unelevated"
-                    ).style(
-                        f"background:{RED};color:white;border-radius:{R_MD};"
-                        f"font-weight:600;width:100%;margin-top:8px;"
-                    )
-
-        def do_export():
-            rows = ["Document,Stamp,Stamp Type,Date Type,Date,Confidence"]
-            for name in verified:
-                for s in docs[name]["stamps"]:
-                    for dte in s.get("dates", []):
-                        rows.append(
-                            f'{name},{s["id"]},{s["type"]},{dte["type"]},'
-                            f'{dte.get("value","")},{dte.get("ocr_conf",0):.3f}'
-                        )
-            ui.download("\n".join(rows).encode(), "verified_records.csv")
-
-        @ui.refreshable
-        def render_main():
-            main.clear()
-            with main:
-                if not docs:
-                    with ui.column().style("margin:80px auto;text-align:center;max-width:420px;"):
-                        ui.label("Upload a document to begin").style(
-                            f"font-size:26px;font-weight:700;color:{TEXT_PRI};"
-                        )
-                        ui.label(
-                            "Select one or more passport images from the sidebar to "
-                            "start automated stamp detection and date extraction."
-                        ).style(f"color:{TEXT_TER};font-size:14px;margin-top:8px;")
-                    return
-
-                if state["active"] is None:
-                    state["active"] = next(iter(docs))
-
-                if len(verified) == len(docs) and docs:
-                    with ui.column().style(
-                        f"margin:60px auto;max-width:440px;text-align:center;"
-                        f"background:{BG};border:1px solid {SURFACE};border-radius:{R_MD};"
-                        f"padding:36px 28px;box-shadow:{ELEV_13};"
-                    ):
-                        ui.label("All documents verified").style(
-                            f"font-size:20px;font-weight:700;color:{TEXT_PRI};"
-                        )
-                        ui.label(f"{len(docs)} document(s) reviewed successfully.").style(
-                            f"color:{TEXT_TER};font-size:13px;margin-top:6px;"
-                        )
-                    return
-
-                name = state["active"]
-                d = docs[name]
-                stamps = d["stamps"]
-                img_pil = d["img"]
-                sel_id = state["selected"]
-
-                n_entry = sum(1 for s in stamps if s["type"] == "Entry")
-                n_exit  = sum(1 for s in stamps if s["type"] == "Exit")
-                n_flag  = sum(1 for s in stamps if needs_review(s))
-                is_verified = name in verified
-
-                # Header
-                with ui.row().classes("items-center justify-between w-full").style(
-                    f"border-bottom:1px solid {SURFACE};padding-bottom:12px;margin-bottom:16px;"
-                ):
-                    with ui.column().style("gap:4px;"):
-                        ui.label(name).style(
-                            f"font-size:18px;font-weight:700;color:{TEXT_PRI};"
-                        )
-                        with ui.row().style("gap:6px;"):
-                            pill(f"{n_entry} Entry", PURPLE)
-                            pill(f"{n_exit} Exit", RED)
-                            if n_flag:
-                                pill(f"{n_flag} Need Review", TEXT_TER)
-                    if is_verified:
-                        pill("Verified", RED, outline=True)
-
-                with ui.row().classes("w-full no-wrap").style("gap:24px;align-items:flex-start;"):
-
-                    # ── LEFT: image ─────────────────────────────────────
-                    with ui.column().style("flex:1.2;min-width:0;gap:8px;"):
-                        overline("Document View")
-
-                        sel = next((s for s in stamps if s["id"] == sel_id), None)
-                        if sel:
-                            c = TYPE_COLOR.get(sel["type"], TEXT_SEC)
-                            with ui.row().classes("items-center w-full").style(
-                                f"border-left:3px solid {c};background:{hex_rgba(c,0.06)};"
-                                f"border-radius:0 8px 8px 0;padding:8px 14px;gap:10px;"
-                            ):
-                                with ui.column().style("gap:0;"):
-                                    ui.label(f"{sel['id']} — {sel['type']} Stamp").style(
-                                        f"font-weight:700;color:{c};font-size:14px;"
-                                    )
-                                    ui.label(f"Detection confidence: {sel['det_conf']:.0%}").style(
-                                        f"font-size:12px;color:{TEXT_TER};"
-                                    )
-                            crop = img_pil.crop(tuple(pad_box(sel["box"], img_pil.size)))
-                            ui.image(crop).style(
-                                f"border-radius:{R_MD};box-shadow:{ELEV_7};width:100%;"
-                            )
-                            ui.label("Full document below — click any stamp to inspect").style(
-                                f"font-size:11px;color:{TEXT_TER};"
-                            )
-
-                        w, h = img_pil.size
-                        img_widget = ui.interactive_image(
-                            source=img_pil,
-                            content=build_svg_overlay(stamps, sel_id),
-                            size=(w, h),
-                            events=["click"],
-                        ).classes("w-full").style(
-                            f"border-radius:{R_MD};box-shadow:{ELEV_13};border:1px solid {SURFACE};"
-                        )
-
-                        def on_click(e, sname=name, stamps=stamps, widget=None):
-                            for s in stamps:
-                                x1, y1, x2, y2 = s["box"]
-                                if x1 <= e.image_x <= x2 and y1 <= e.image_y <= y2:
-                                    state["selected"] = s["id"]
-                                    render_main.refresh()
-                                    return
-                        img_widget.on_mouse(on_click)
-
-                    # ── RIGHT: timeline / priority list ──────────────────
-                    with ui.column().style("flex:1;min-width:0;gap:10px;"):
-                        with ui.row().classes("items-center justify-between w-full"):
-                            overline("Stamp Timeline")
-                            with ui.row().style("gap:4px;"):
-                                for mode in ("Timeline", "Priority"):
-                                    active_mode = state["sort_mode"] == mode
-                                    def set_mode(m=mode):
-                                        state["sort_mode"] = m
-                                        render_main.refresh()
-                                    ui.button(mode, on_click=set_mode).props("flat dense").style(
-                                        f"font-size:11px;font-weight:700;padding:2px 10px;"
-                                        f"border-radius:{R_PILL};min-width:0;"
-                                        f"background:{RED if active_mode else 'transparent'};"
-                                        f"color:{'white' if active_mode else TEXT_TER};"
-                                    )
-
-                        ordered = (
-                            sorted(stamps, key=chrono_key)
-                            if state["sort_mode"] == "Timeline"
-                            else sorted(stamps, key=cumulative_conf)
-                        )
-
-                        with ui.column().style(
-                            "gap:0;max-height:640px;overflow-y:auto;padding-right:4px;width:100%;"
-                        ):
-                            for i, s in enumerate(ordered):
-                                if state["sort_mode"] == "Timeline" and i > 0:
-                                    prev_val, _ = primary_date(ordered[i - 1])
-                                    cur_val, _ = primary_date(s)
-                                    if prev_val and cur_val:
-                                        ui.label("↓").style(
-                                            f"text-align:center;width:100%;color:{BORDER};"
-                                            f"font-size:14px;margin:0;line-height:1;"
-                                        )
-                                render_stamp_card(s, sel_id, name)
-
-                # Verify button
-                ui.element("div").style("height:20px;")
-                if not is_verified:
-                    def do_verify(n=name):
-                        verified.add(n)
-                        render_sidebar()
-                        render_main.refresh()
-                    ui.button("Mark Document as Verified", on_click=do_verify).props(
-                        "unelevated"
-                    ).style(
-                        f"background:{RED};color:white;border-radius:{R_MD};"
-                        f"font-weight:600;width:100%;padding:10px;"
-                    )
-
-        def render_stamp_card(s, sel_id, fname):
-            c = TYPE_COLOR.get(s["type"], TEXT_SEC)
-            is_sel = s["id"] == sel_id
-            flagged = needs_review(s)
-            val, _ = primary_date(s)
-            conf = cumulative_conf(s)
-
-            border = f"2px solid {c}" if is_sel else (
-                f"1.5px dashed {RED}" if flagged else f"1px solid {hex_rgba(c,0.25)}"
-            )
-            bg = hex_rgba(c, 0.06) if is_sel else BG
-
-            def select(sid=s["id"]):
-                state["selected"] = sid
-                render_main.refresh()
-
-            with ui.card().style(
-                f"width:100%;border:{border};border-radius:{R_MD};background:{bg};"
-                f"box-shadow:{ELEV_7 if not is_sel else ELEV_13};padding:12px 16px;margin-bottom:8px;"
-            ).classes("qi-card").on("click", select):
-
-                with ui.row().classes("items-center justify-between w-full"):
-                    pill(s["type"], c)
-                    with ui.row().style("gap:6px;align-items:center;"):
-                        if flagged:
-                            ui.label("REVIEW").style(
-                                f"font-size:10px;font-weight:700;color:{RED};"
-                                f"background:{hex_rgba(RED,0.1)};padding:2px 8px;"
-                                f"border-radius:{R_PILL};"
-                            )
-                        ui.label(s["id"]).style(f"font-size:11px;color:{TEXT_TER};")
-
-                ui.label(val if val else "—").style(
-                    f"font-size:18px;font-weight:700;color:{TEXT_PRI};margin:6px 0 2px;"
-                )
-
-                if val:
-                    with ui.element("div").style(
-                        f"background:{SURFACE};border-radius:{R_PILL};height:3px;margin-top:4px;"
-                    ):
-                        ui.element("div").style(
-                            f"width:{int(conf*100)}%;background:{RED if flagged else c};"
-                            f"height:3px;border-radius:{R_PILL};"
-                        )
-                    ui.label(f"{conf:.0%} combined confidence").style(
-                        f"font-size:11px;color:{TEXT_TER};"
-                    )
-                else:
-                    ui.label("No date detected").style(f"font-size:12px;color:{TEXT_TER};")
-
-                if is_sel:
-                    render_inline_editor(s, fname)
-
-        def render_inline_editor(s, fname):
-            ui.separator().style(f"margin:10px 0;background:{SURFACE};")
-            rows_container = ui.column().style("gap:8px;width:100%;")
-
-            def redraw_rows():
-                rows_container.clear()
-                with rows_container:
-                    for idx, dte in enumerate(s["dates"]):
-                        with ui.row().classes("items-center w-full").style("gap:6px;"):
-                            type_sel = ui.select(
-                                ["Entry", "Exit", "Until", "Unknown"],
-                                value=dte.get("type", "Unknown"),
-                            ).style("width:100px;")
-                            date_in = ui.input(
-                                value=to_html_date(dte.get("value")),
-                            ).props("type=date dense").style("flex:1;")
-
-                            def commit(idx=idx, type_sel=type_sel, date_in=date_in):
-                                s["dates"][idx]["type"] = type_sel.value
-                                s["dates"][idx]["value"] = to_date_str(date_in.value)
-                                render_main.refresh()
-
-                            type_sel.on("update:model-value", lambda e, c=commit: c())
-                            date_in.on("update:model-value", lambda e, c=commit: c())
-
-                            def remove(idx=idx):
-                                s["dates"].pop(idx)
-                                render_main.refresh()
-                            ui.button(icon="close", on_click=remove).props(
-                                "flat dense round size=sm"
-                            ).style(f"color:{TEXT_TER};")
-
-                    def add_row():
-                        s["dates"].append({"value": None, "type": "Entry", "ocr_conf": 0.0})
-                        render_main.refresh()
-                    ui.button("+ Add Date", on_click=add_row).props("flat dense").style(
-                        f"font-size:12px;color:{RED};font-weight:600;padding:0;"
-                    )
-
-            redraw_rows()
-
-
-        # ── Upload handler ───────────────────────────────────────────────
-        async def handle_upload(e: events.UploadEventArguments):
-            # In NiceGUI 3.0+, use e.file and await the read() method
-            img_data = await e.file.read()
-            
-            img = Image.open(io.BytesIO(img_data)).convert("RGB")
-            img_np = np.array(img)
-            
-            # Run pipeline
-            stamps = pipeline.process(img_np)
-            docs[e.name] = {"img": img, "stamps": stamps}
-            
-            # Set active if this is the first doc
-            if state["active"] is None:
-                state["active"] = e.name
-            
-            # Refresh UI
-            render_sidebar()
-            render_main.refresh()
-
-        upload.on_upload(handle_upload)
-
-        render_sidebar()
-        render_main()
-
-
-# ── Small render helpers (module scope) ─────────────────────────────────────
 def hex_rgba(h, a):
     h = h.lstrip("#")
     r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
     return f"rgba({r},{g},{b},{a:.2f})"
 
-def pad_box(box, size, pad=16):
-    w, h = size
-    x1, y1, x2, y2 = box
-    return (max(0, x1 - pad), max(0, y1 - pad), min(w, x2 + pad), min(h, y2 + pad))
 
-def build_svg_overlay(stamps, sel_id):
+def build_svg_overlay(stamps, sel_id, pending_point=None):
     parts = []
     for s in stamps:
+        if s.get("deleted"):
+            continue
         x1, y1, x2, y2 = s["box"]
         c = TYPE_COLOR.get(s["type"], TEXT_SEC)
         is_sel = s["id"] == sel_id
@@ -506,8 +96,7 @@ def build_svg_overlay(stamps, sel_id):
         dash = 'stroke-dasharray="6,4"' if flagged and not is_sel else ""
         parts.append(
             f'<rect x="{x1}" y="{y1}" width="{x2-x1}" height="{y2-y1}" '
-            f'fill="none" stroke="{c}" stroke-width="{stroke_w}" opacity="{opacity}" '
-            f'rx="4" {dash}/>'
+            f'fill="none" stroke="{c}" stroke-width="{stroke_w}" opacity="{opacity}" rx="4" {dash}/>'
         )
         label = f'{s["type"]} {s["det_conf"]:.0%}'
         parts.append(
@@ -516,7 +105,14 @@ def build_svg_overlay(stamps, sel_id):
             f'<text x="{x1+8}" y="{max(0,y1-8)}" fill="white" font-size="12" '
             f'font-family="Open Sans">{label}</text>'
         )
+    if pending_point:
+        px, py = pending_point
+        parts.append(
+            f'<circle cx="{px}" cy="{py}" r="8" fill="none" stroke="{RED}" stroke-width="3"/>'
+            f'<circle cx="{px}" cy="{py}" r="2" fill="{RED}"/>'
+        )
     return "".join(parts)
+
 
 def overline(text):
     ui.label(text.upper()).style(
@@ -526,15 +122,549 @@ def overline(text):
 def pill(text, color, outline=False):
     if outline:
         ui.label(text).style(
-            f"font-size:11px;font-weight:700;color:{color};"
-            f"background:{hex_rgba(color,0.08)};padding:3px 12px;"
-            f"border-radius:999px;"
+            f"font-size:11px;font-weight:700;color:{color};background:{hex_rgba(color,0.08)};"
+            f"padding:3px 12px;border-radius:999px;"
         )
     else:
         ui.label(text).style(
             f"font-size:11px;font-weight:700;color:white;background:{color};"
             f"padding:3px 12px;border-radius:999px;"
         )
+
+
+# ── Page ──────────────────────────────────────────────────────────────────
+@ui.page("/")
+def main_page():
+    docs = {}   # filename -> {"img":PIL.Image,"stamps":[...],"fit":(scale,W,H),"next_uid":1}
+    state = {"active": None, "selected": None, "add_mode": False,
+             "pending_point": None, "panel": None, "show_removed": {}}
+    verified = set()
+
+    ui.add_head_html(f"""
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>
+      body {{ font-family:'Open Sans',sans-serif; background:#ffffff; margin:0; }}
+      .qi-row {{ cursor:pointer; transition:background .12s; }}
+      .qi-row:hover {{ background:{BG_ALT} !important; }}
+      .qi-card {{ transition: box-shadow .15s; cursor:pointer; }}
+      .qi-card:hover {{ box-shadow:{ELEV_13}; }}
+      ::-webkit-scrollbar {{ width:6px; }}
+      ::-webkit-scrollbar-thumb {{ background:{BORDER}; border-radius:4px; }}
+    </style>
+    """)
+
+    with ui.row().classes("w-full items-center").style(f"background:{RED};padding:14px 28px;margin:0;"):
+        ui.label("Immigration Stamp Review").style("color:white;font-weight:700;font-size:17px;")
+        ui.label("Automated entry / exit timeline extraction").style(
+            "color:rgba(255,255,255,.75);font-size:12px;margin-left:12px;")
+
+    with ui.row().classes("w-full no-wrap").style("padding:20px 28px;gap:24px;align-items:flex-start;"):
+
+        # ── Sidebar ──────────────────────────────────────────────────────
+        with ui.column().style("width:300px;flex-shrink:0;gap:12px;"):
+            ui.label("WORKSPACE").style(
+                f"font-size:11px;font-weight:700;letter-spacing:1.2px;color:{TEXT_TER};")
+            upload = ui.upload(label="Upload passport images", multiple=True, auto_upload=True).props(
+                "accept=.jpg,.jpeg,.png flat").classes("w-full").style(
+                f"border:1.5px dashed {BORDER};border-radius:{R_MD};")
+            doc_list = ui.column().classes("w-full").style("gap:6px;")
+            export_slot = ui.column().classes("w-full")
+
+        main = ui.column().classes("flex-1").style("gap:0;min-width:0;")
+
+        # ── Sidebar rendering ────────────────────────────────────────────
+        def render_sidebar():
+            doc_list.clear()
+            with doc_list:
+                for name, d in docs.items():
+                    active_stamps = [s for s in d["stamps"] if not s.get("deleted")]
+                    flagged = sum(1 for s in active_stamps if needs_review(s))
+                    total = len(active_stamps)
+                    is_active = name == state["active"]
+                    is_done = name in verified
+                    bg = hex_rgba(RED, 0.06) if is_active else BG
+                    border = f"1.5px solid {RED}" if is_active else f"1px solid {SURFACE}"
+
+                    def select_doc(n=name):
+                        state["active"] = n
+                        state["selected"] = None
+                        state["add_mode"] = False
+                        state["pending_point"] = None
+                        render_sidebar()
+                        render_document_pane.refresh()
+                        render_table.refresh()
+
+                    with ui.card().style(
+                        f"width:100%;background:{bg};border:{border};border-radius:{R_MD};"
+                        f"padding:10px 12px;box-shadow:none;"
+                    ).classes("qi-card").on("click", select_doc):
+                        with ui.row().classes("items-center justify-between w-full").style("gap:6px;"):
+                            ui.label(name).style(
+                                f"font-size:13px;font-weight:600;color:{TEXT_PRI};"
+                                f"overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:170px;")
+                            if is_done:
+                                ui.label("Verified").style(f"font-size:10px;font-weight:700;color:{RED};")
+                        with ui.row().classes("items-center w-full").style("gap:6px;margin-top:4px;"):
+                            with ui.element("div").style(
+                                f"flex:1;background:{SURFACE};border-radius:{R_PILL};height:4px;overflow:hidden;"
+                            ):
+                                pct = int((flagged / total) * 100) if total else 0
+                                ui.element("div").style(
+                                    f"width:{pct}%;background:{RED};height:4px;")
+                            ui.label(f"{flagged}/{total} review" if total else "no stamps").style(
+                                f"font-size:11px;color:{TEXT_TER};white-space:nowrap;")
+
+            export_slot.clear()
+            with export_slot:
+                if verified:
+                    ui.button("Export Verified Records", on_click=export_verified).props("unelevated").style(
+                        f"background:{RED};color:white;border-radius:{R_MD};font-weight:600;width:100%;")
+                any_feedback = any(
+                    s.get("source") == "user_added" or s.get("deleted")
+                    for d in docs.values() for s in d["stamps"]
+                )
+                if any_feedback:
+                    ui.button("Export Retrain Feedback", on_click=export_feedback).props(
+                        "unelevated outline").style(
+                        f"color:{RED};border:1px solid {RED};border-radius:{R_MD};"
+                        f"font-weight:600;width:100%;margin-top:6px;background:transparent;")
+
+        def export_verified():
+            rows = ["Document,Stamp,Stamp Type,Date Type,Date,OCR Confidence"]
+            for name in verified:
+                for s in docs[name]["stamps"]:
+                    if s.get("deleted"):
+                        continue
+                    for dte in s.get("dates", []):
+                        rows.append(
+                            f'{name},{s["id"]},{s["type"]},{dte["type"]},'
+                            f'{dte.get("value","")},{dte.get("ocr_conf") or ""}')
+            ui.download("\n".join(rows).encode(), "verified_records.csv")
+
+        def export_feedback():
+            rows = ["Document,Stamp,Type,Box,Source,Status"]
+            for name, d in docs.items():
+                for s in d["stamps"]:
+                    status = "removed" if s.get("deleted") else "active"
+                    box = "|".join(str(v) for v in s["box"])
+                    rows.append(f'{name},{s["id"]},{s["type"]},{box},{s.get("source","model_detected")},{status}')
+            ui.download("\n".join(rows).encode(), "retrain_feedback.csv")
+
+        # ── Zoom mechanics ───────────────────────────────────────────────
+        def apply_zoom(px, py, scale, animate=True):
+            panel = state["panel"]
+            if not panel:
+                return
+            tx = VW / 2 - px * scale
+            ty = VH / 2 - py * scale
+            transition = "transform .5s cubic-bezier(.4,0,.2,1)" if animate else "none"
+            panel["wrapper"].style(
+                f"transform:translate({tx}px,{ty}px) scale({scale});"
+                f"transform-origin:0 0;transition:{transition};"
+            )
+
+        def zoom_to_stamp(s):
+            x1, y1, x2, y2 = s["box"]
+            cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
+            bw, bh = max(x2 - x1, 1), max(y2 - y1, 1)
+            target = min(VW * 0.55 / bw, VH * 0.55 / bh)
+            fit = state["panel"]["fit"]
+            target = max(fit * 1.2, min(target, fit * 6))
+            apply_zoom(cx, cy, target)
+
+        def zoom_reset():
+            panel = state["panel"]
+            W, H = panel["size"]
+            apply_zoom(W / 2, H / 2, panel["fit"])
+
+        # ── Image click handling ─────────────────────────────────────────
+        def on_image_click(e):
+            name = state["active"]
+            stamps = docs[name]["stamps"]
+            if state["add_mode"]:
+                if state["pending_point"] is None:
+                    state["pending_point"] = (e.image_x, e.image_y)
+                    state["panel"]["img_widget"].set_content(
+                        build_svg_overlay(stamps, None, state["pending_point"]))
+                    render_toolbar.refresh()
+                else:
+                    x1, y1 = state["pending_point"]
+                    x2, y2 = e.image_x, e.image_y
+                    box = [min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2)]
+                    if box[2] - box[0] < 5 or box[3] - box[1] < 5:
+                        return  # ignore accidental tiny boxes
+                    doc = docs[name]
+                    uid = f"STAMP-USER-{doc['next_uid']}"
+                    doc["next_uid"] += 1
+                    new_stamp = {"id": uid, "type": "Entry", "box": box, "det_conf": 1.0,
+                                 "dates": [], "source": "user_added", "deleted": False}
+                    doc["stamps"].append(new_stamp)
+                    state["add_mode"] = False
+                    state["pending_point"] = None
+                    state["selected"] = uid
+                    zoom_to_stamp(new_stamp)
+                    state["panel"]["img_widget"].set_content(build_svg_overlay(doc["stamps"], uid))
+                    render_toolbar.refresh()
+                    render_table.refresh()
+                    render_sidebar()
+                return
+
+            for s in stamps:
+                if s.get("deleted"):
+                    continue
+                x1, y1, x2, y2 = s["box"]
+                if x1 <= e.image_x <= x2 and y1 <= e.image_y <= y2:
+                    select_stamp(s["id"])
+                    return
+
+        def select_stamp(sid):
+            state["selected"] = sid
+            name = state["active"]
+            stamps = docs[name]["stamps"]
+            s = next((x for x in stamps if x["id"] == sid), None)
+            if s:
+                zoom_to_stamp(s)
+                state["panel"]["img_widget"].set_content(build_svg_overlay(stamps, sid))
+            render_table.refresh()
+
+        def toggle_add_mode():
+            state["add_mode"] = not state["add_mode"]
+            state["pending_point"] = None
+            state["selected"] = None
+            if state["add_mode"]:
+                zoom_reset()
+            stamps = docs[state["active"]]["stamps"]
+            state["panel"]["img_widget"].set_content(build_svg_overlay(stamps, None))
+            render_toolbar.refresh()
+            render_table.refresh()
+
+        # ── Toolbar ──────────────────────────────────────────────────────
+        @ui.refreshable
+        def render_toolbar():
+            add_on = state["add_mode"]
+            with ui.row().classes("items-center w-full").style("gap:8px;margin-bottom:8px;"):
+                ui.button(
+                    "Cancel Add Stamp" if add_on else "+ Add Stamp",
+                    on_click=toggle_add_mode
+                ).props("unelevated dense").style(
+                    f"background:{RED if add_on else BG};color:{'white' if add_on else TEXT_SEC};"
+                    f"border:1px solid {RED if add_on else BORDER};border-radius:{R_MD};"
+                    f"font-size:12px;font-weight:600;padding:6px 14px;"
+                )
+                ui.button("Reset View", on_click=lambda: zoom_reset()).props("flat dense").style(
+                    f"color:{TEXT_TER};font-size:12px;font-weight:600;"
+                )
+                if add_on:
+                    hint = ("Click the first corner of the stamp"
+                            if state["pending_point"] is None
+                            else "Click the opposite corner to finish")
+                    ui.label(hint).style(f"font-size:12px;color:{RED};font-weight:600;")
+
+        # ── Document image pane (built once per doc switch) ──────────────
+        @ui.refreshable
+        def render_document_pane():
+            name = state["active"]
+            if name is None:
+                return
+            d = docs[name]
+            img_pil = d["img"]
+            W, H = img_pil.size
+            fit = min(VW / W, VH / H)
+            d["fit"] = fit
+
+            render_toolbar()
+
+            with ui.element("div").style(
+                f"width:{VW}px;height:{VH}px;overflow:hidden;position:relative;"
+                f"border-radius:{R_MD};box-shadow:{ELEV_13};border:1px solid {SURFACE};"
+                f"background:{BG_ALT};margin:0 auto;"
+            ):
+                wrapper = ui.element("div").style(
+                    f"width:{W}px;height:{H}px;position:absolute;top:0;left:0;"
+                    f"transform-origin:0 0;transition:transform .5s cubic-bezier(.4,0,.2,1);"
+                )
+                with wrapper:
+                    img_widget = ui.interactive_image(
+                        source=img_pil,
+                        content=build_svg_overlay(d["stamps"], state["selected"]),
+                        size=(W, H),
+                        events=["click"],
+                    ).style(f"width:{W}px;height:{H}px;")
+                    img_widget.on_mouse(on_image_click)
+
+            state["panel"] = {"wrapper": wrapper, "img_widget": img_widget, "fit": fit, "size": (W, H)}
+            apply_zoom(W / 2, H / 2, fit, animate=False)
+
+            ui.label("Click a stamp to inspect it, or use Add Stamp to mark a missed one.").style(
+                f"font-size:11px;color:{TEXT_TER};text-align:center;margin-top:6px;"
+            )
+
+        # ── Timeline table ───────────────────────────────────────────────
+        def render_editor_row(s, name):
+            with ui.column().style(
+                f"width:100%;background:{BG_ALT};border-radius:0 0 {R_MD} {R_MD};"
+                f"padding:12px 16px;gap:8px;"
+            ):
+                rows_container = ui.column().style("gap:6px;width:100%;")
+
+                def redraw():
+                    rows_container.clear()
+                    with rows_container:
+                        for idx, dte in enumerate(s["dates"]):
+                            with ui.row().classes("items-center w-full").style("gap:6px;"):
+                                type_sel = ui.select(
+                                    ["Entry", "Exit", "Until", "Unknown"],
+                                    value=dte.get("type", "Unknown"),
+                                ).style("width:100px;")
+                                date_in = ui.input(value=to_html_date(dte.get("value"))).props(
+                                    "type=date dense").style("flex:1;")
+                                conf = dte.get("ocr_conf")
+                                ui.label(f"{conf:.0%}" if conf is not None else "Manual").style(
+                                    f"font-size:11px;color:{TEXT_TER};width:56px;"
+                                )
+
+                                def commit(idx=idx, type_sel=type_sel, date_in=date_in):
+                                    s["dates"][idx]["type"] = type_sel.value
+                                    s["dates"][idx]["value"] = to_date_str(date_in.value)
+                                    s["dates"][idx]["ocr_conf"] = None  # manual edit overrides OCR
+                                    if state["panel"]:
+                                        state["panel"]["img_widget"].set_content(
+                                            build_svg_overlay(docs[name]["stamps"], s["id"]))
+                                    render_table.refresh()
+
+                                type_sel.on("update:model-value", lambda e, c=commit: c())
+                                date_in.on("update:model-value", lambda e, c=commit: c())
+
+                                def remove_date(idx=idx):
+                                    s["dates"].pop(idx)
+                                    render_table.refresh()
+                                ui.button(icon="close", on_click=remove_date).props(
+                                    "flat dense round size=sm").style(f"color:{TEXT_TER};")
+
+                        def add_date():
+                            s["dates"].append({"value": None, "type": "Entry", "ocr_conf": None})
+                            render_table.refresh()
+                        ui.button("+ Add Date", on_click=add_date).props("flat dense").style(
+                            f"font-size:12px;color:{RED};font-weight:600;padding:0;")
+
+                redraw()
+
+                def remove_stamp():
+                    s["deleted"] = True
+                    state["selected"] = None
+                    if state["panel"]:
+                        state["panel"]["img_widget"].set_content(
+                            build_svg_overlay(docs[name]["stamps"], None))
+                    render_table.refresh()
+                    render_sidebar()
+                ui.separator().style(f"background:{SURFACE};margin:4px 0;")
+                ui.button("Remove This Stamp (false detection)", on_click=remove_stamp).props(
+                    "flat dense").style(f"font-size:12px;color:{RED};font-weight:600;padding:0;")
+
+        @ui.refreshable
+        def render_table():
+            name = state["active"]
+            if name is None:
+                return
+            stamps = docs[name]["stamps"]
+            active_stamps = [s for s in stamps if not s.get("deleted")]
+            ordered = sorted(active_stamps, key=chrono_key)
+            sel_id = state["selected"]
+
+            # Header row
+            with ui.element("div").style(
+                f"display:grid;grid-template-columns:10px 120px 80px 130px 1fr 30px;"
+                f"gap:12px;padding:8px 14px;background:{BG_ALT};border-radius:{R_MD} {R_MD} 0 0;"
+                f"align-items:center;"
+            ):
+                ui.label("")
+                ui.label("DATE").style(f"font-size:10px;font-weight:700;color:{TEXT_TER};letter-spacing:.6px;")
+                ui.label("TYPE").style(f"font-size:10px;font-weight:700;color:{TEXT_TER};letter-spacing:.6px;")
+                ui.label("STAMP").style(f"font-size:10px;font-weight:700;color:{TEXT_TER};letter-spacing:.6px;")
+                ui.label("OCR CONFIDENCE").style(f"font-size:10px;font-weight:700;color:{TEXT_TER};letter-spacing:.6px;")
+                ui.label("")
+
+            with ui.column().style(
+                f"width:100%;gap:0;border:1px solid {SURFACE};border-top:none;"
+                f"border-radius:0 0 {R_MD} {R_MD};max-height:560px;overflow-y:auto;"
+            ):
+                if not ordered:
+                    with ui.row().style("padding:20px;justify-content:center;"):
+                        ui.label("No stamps detected. Use Add Stamp on the image to add one.").style(
+                            f"color:{TEXT_TER};font-size:13px;")
+
+                for s in ordered:
+                    entry = primary_entry(s)
+                    c = TYPE_COLOR.get(s["type"], TEXT_SEC)
+                    is_sel = s["id"] == sel_id
+                    flagged = needs_review(s)
+                    val = entry["value"] if entry else None
+                    conf = entry.get("ocr_conf") if entry else None
+
+                    dot_color = RED if flagged else CERISE
+                    row_bg = hex_rgba(c, 0.05) if is_sel else BG
+
+                    def onclick(sid=s["id"]):
+                        select_stamp(sid)
+
+                    with ui.element("div").style(
+                        f"display:grid;grid-template-columns:10px 120px 80px 130px 1fr 30px;"
+                        f"gap:12px;padding:10px 14px;align-items:center;background:{row_bg};"
+                        f"border-left:3px solid {c};border-bottom:1px solid {SURFACE};"
+                    ).classes("qi-row").on("click", onclick):
+                        with ui.element("div").style(
+                            f"width:8px;height:8px;border-radius:50%;background:{dot_color};"
+                        ):
+                            pass
+                        ui.label(val if val else "—").style(
+                            f"font-size:14px;font-weight:700;color:{TEXT_PRI};")
+                        pill(s["type"], c)
+                        with ui.column().style("gap:0;"):
+                            ui.label(s["id"]).style(f"font-size:11px;color:{TEXT_TER};")
+                            ui.label(f"Detection {s['det_conf']:.0%}").style(
+                                f"font-size:10px;color:{TEXT_TER};")
+                        if val:
+                            with ui.column().style("gap:2px;width:100%;"):
+                                if conf is not None:
+                                    with ui.element("div").style(
+                                        f"background:{SURFACE};border-radius:{R_PILL};height:4px;overflow:hidden;"
+                                    ):
+                                        ui.element("div").style(
+                                            f"width:{int(conf*100)}%;background:{RED if flagged else CERISE};height:4px;")
+                                    ui.label(
+                                        f"{conf:.0%} OCR" + ("  •  Needs review" if flagged else "")
+                                    ).style(f"font-size:11px;color:{RED if flagged else TEXT_TER};"
+                                            f"font-weight:{'700' if flagged else '400'};")
+                                else:
+                                    ui.label("Manual entry").style(f"font-size:12px;color:{TEXT_TER};")
+                        else:
+                            ui.label("No date detected — click to add").style(
+                                f"font-size:12px;color:{RED};font-weight:600;")
+                        ui.label("−" if is_sel else "+").style(
+                            f"font-size:16px;color:{TEXT_TER};text-align:center;")
+
+                    if is_sel:
+                        render_editor_row(s, name)
+
+            removed = [s for s in stamps if s.get("deleted")]
+            if removed:
+                shown = state["show_removed"].get(name, False)
+                def toggle_removed():
+                    state["show_removed"][name] = not state["show_removed"].get(name, False)
+                    render_table.refresh()
+                ui.button(
+                    f"{'Hide' if shown else 'Show'} removed stamps ({len(removed)})",
+                    on_click=toggle_removed
+                ).props("flat dense").style(f"font-size:12px;color:{TEXT_TER};margin-top:6px;")
+                if shown:
+                    for s in removed:
+                        with ui.row().classes("items-center justify-between w-full").style(
+                            f"padding:8px 14px;background:{BG_ALT};border-radius:{R_MD};margin-top:4px;"
+                            f"opacity:.6;"
+                        ):
+                            ui.label(f'{s["id"]} — {s["type"]} (removed)').style(
+                                f"font-size:12px;color:{TEXT_TER};text-decoration:line-through;")
+                            def restore(s=s):
+                                s["deleted"] = False
+                                render_table.refresh()
+                                render_sidebar()
+                                if state["panel"]:
+                                    state["panel"]["img_widget"].set_content(
+                                        build_svg_overlay(docs[name]["stamps"], None))
+                            ui.button("Restore", on_click=restore).props("flat dense").style(
+                                f"font-size:11px;color:{RED};font-weight:600;")
+
+        # ── Main layout (rebuilt on doc-set change only) ──────────────────
+        @ui.refreshable
+        def render_main():
+            main.clear()
+            with main:
+                if not docs:
+                    with ui.column().style("margin:80px auto;text-align:center;max-width:420px;"):
+                        ui.label("Upload a document to begin").style(
+                            f"font-size:26px;font-weight:700;color:{TEXT_PRI};")
+                        ui.label(
+                            "Select one or more passport images from the sidebar to start "
+                            "automated stamp detection and date extraction."
+                        ).style(f"color:{TEXT_TER};font-size:14px;margin-top:8px;")
+                    return
+
+                if state["active"] is None:
+                    state["active"] = next(iter(docs))
+
+                if docs and len(verified) == len(docs):
+                    with ui.column().style(
+                        f"margin:60px auto;max-width:440px;text-align:center;background:{BG};"
+                        f"border:1px solid {SURFACE};border-radius:{R_MD};padding:36px 28px;"
+                        f"box-shadow:{ELEV_13};"
+                    ):
+                        ui.label("All documents verified").style(
+                            f"font-size:20px;font-weight:700;color:{TEXT_PRI};")
+                        ui.label(f"{len(docs)} document(s) reviewed successfully.").style(
+                            f"color:{TEXT_TER};font-size:13px;margin-top:6px;")
+                    return
+
+                name = state["active"]
+                stamps = docs[name]["stamps"]
+                active_stamps = [s for s in stamps if not s.get("deleted")]
+                n_entry = sum(1 for s in active_stamps if s["type"] == "Entry")
+                n_exit  = sum(1 for s in active_stamps if s["type"] == "Exit")
+                n_flag  = sum(1 for s in active_stamps if needs_review(s))
+                is_verified = name in verified
+
+                with ui.row().classes("items-center justify-between w-full").style(
+                    f"border-bottom:1px solid {SURFACE};padding-bottom:12px;margin-bottom:16px;"
+                ):
+                    with ui.column().style("gap:4px;"):
+                        ui.label(name).style(f"font-size:18px;font-weight:700;color:{TEXT_PRI};")
+                        with ui.row().style("gap:6px;"):
+                            pill(f"{n_entry} Entry", PURPLE)
+                            pill(f"{n_exit} Exit", RED)
+                            if n_flag:
+                                pill(f"{n_flag} Need Review", TEXT_TER)
+                    if is_verified:
+                        pill("Verified", RED, outline=True)
+
+                with ui.row().classes("w-full no-wrap").style("gap:24px;align-items:flex-start;"):
+                    with ui.column().style("flex:1.1;min-width:0;gap:4px;"):
+                        overline("Document View")
+                        render_document_pane()
+
+                    with ui.column().style("flex:1;min-width:0;gap:8px;"):
+                        overline("Stamp Timeline — chronological, prioritize by confidence colour")
+                        render_table()
+
+                ui.element("div").style("height:20px;")
+                if not is_verified:
+                    def do_verify(n=name):
+                        verified.add(n)
+                        render_sidebar()
+                        render_main.refresh()
+                    ui.button("Mark Document as Verified", on_click=do_verify).props("unelevated").style(
+                        f"background:{RED};color:white;border-radius:{R_MD};font-weight:600;"
+                        f"width:100%;padding:10px;")
+
+        # ── Upload handler ───────────────────────────────────────────────
+        async def handle_upload(e: events.UploadEventArguments):
+            content = await e.file.read() if hasattr(e.file, "read") else e.content.read()
+            img = Image.open(io.BytesIO(content)).convert("RGB")
+            img_np = np.array(img)
+            stamps = pipeline.process(img_np)
+            for s in stamps:
+                s.setdefault("source", "model_detected")
+                s.setdefault("deleted", False)
+            fname = getattr(e, "name", None) or getattr(e.file, "filename", "upload.jpg")
+            docs[fname] = {"img": img, "stamps": stamps, "next_uid": 1}
+            if state["active"] is None:
+                state["active"] = fname
+            render_sidebar()
+            render_main.refresh()
+
+        upload.on_upload(handle_upload)
+
+        render_sidebar()
+        render_main()
 
 
 ui.run(title="AIA Immigration Stamp Review", port=8080, show=False, reload=False)
