@@ -684,7 +684,13 @@ def main_page():
         for s in stamps:
             s.setdefault("source", "model_detected")
             s.setdefault("deleted", False)
-        fname = getattr(e, "name", None) or getattr(e.file, "filename", "upload.jpg")
+        fname = e.file.name
+        if fname in docs:  # avoid silently overwriting a same-named re-upload
+            base, dot, ext = fname.rpartition(".")
+            n = 2
+            while f"{base}({n}){dot}{ext}" in docs:
+                n += 1
+            fname = f"{base}({n}){dot}{ext}"
         docs[fname] = {"img": img, "stamps": stamps, "next_uid": 1}
         if state["active"] is None:
             state["active"] = fname
