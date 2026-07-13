@@ -8,6 +8,7 @@ from pipeline import DocumentPipeline
 Expected stamps schema — see README.md.
 """
 
+import asyncio
 import io
 from datetime import datetime, date
 
@@ -28,24 +29,19 @@ ELEV_7  = "0px 2px 4px rgba(0,0,0,0.08)"
 ELEV_13 = "0px 2px 6px rgba(0,0,0,0.06), 0px 5px 8px rgba(0,0,0,0.04)"
 
 TYPE_COLOR = {"Entry": PURPLE, "Exit": RED}
-REVIEW_THRESHOLD = 0.75      # OCR confidence below this is flagged
-VW, VH = 560, 420            # zoom-viewport pixel size — landscape, matches passport pages
-TABLE_MIN_W = 520            # minimum width before the timeline wraps below the image
+LOW_CONF_THRESHOLD = 0.75    # below this, colour the confidence bar red as a visual cue only
+VW, VH = 560, 420
+TABLE_MIN_W = 520
 
 
 # ── Domain helpers ───────────────────────────────────────────────────────────
 def primary_entry(s):
-    dates = [d for d in s.get("dates", []) if d.get("value") and d["type"] in ("Entry", "Exit")]
+    """The date entry matching this stamp's own type (Entry stamp -> Entry date, etc).
+    Until/Unknown entries from the pipeline are intentionally ignored."""
+    dates = [d for d in s.get("dates", []) if d.get("value") and d["type"] == s["type"]]
     if not dates:
         return None
     return max(dates, key=lambda d: (d.get("ocr_conf") or 0))
-
-def needs_review(s):
-    entry = primary_entry(s)
-    if entry is None:
-        return True
-    conf = entry.get("ocr_conf")
-    return conf is not None and conf < REVIEW_THRESHOLD
 
 def chrono_key(s):
     entry = primary_entry(s)
@@ -55,6 +51,16 @@ def chrono_key(s):
         return datetime.strptime(entry["value"], "%d %b %Y")
     except Exception:
         return datetime.max
+
+def conf_key(s):
+    """Ascending = highest priority to review first. No date > low OCR conf > high OCR conf > manual."""
+    entry = primary_entry(s)
+    if entry is None:
+        return -1
+    c = entry.get("ocr_conf")
+    if c is None:
+        return 1.5
+    return c
 
 def to_date_str(val):
     if val is None:
@@ -90,13 +96,11 @@ def build_svg_overlay(stamps, sel_id, pending_point=None):
         x1, y1, x2, y2 = s["box"]
         c = TYPE_COLOR.get(s["type"], TEXT_SEC)
         is_sel = s["id"] == sel_id
-        flagged = needs_review(s)
         stroke_w = 4 if is_sel else 2
         opacity = 1.0 if is_sel else 0.55
-        dash = 'stroke-dasharray="6,4"' if flagged and not is_sel else ""
         parts.append(
             f'<rect x="{x1}" y="{y1}" width="{x2-x1}" height="{y2-y1}" '
-            f'fill="none" stroke="{c}" stroke-width="{stroke_w}" opacity="{opacity}" rx="4" {dash}/>'
+            f'fill="none" stroke="{c}" stroke-width="{stroke_w}" opacity="{opacity}" rx="4"/>'
         )
         label = f'{s["type"]} {s["det_conf"]:.0%}'
         parts.append(
@@ -135,9 +139,10 @@ def pill(text, color, outline=False):
 # ── Page ──────────────────────────────────────────────────────────────────
 @ui.page("/")
 def main_page():
-    docs = {}    # filename -> {"img":PIL.Image,"stamps":[...],"fit":float,"next_uid":1}
+    docs = {}
     state = {"active": None, "selected": None, "add_mode": False,
-             "pending_point": None, "panel": None, "show_removed": {}}
+             "pending_point": None, "panel": None, "show_removed": {},
+             "sort_mode": "Date", "uploading": set()}
     verified = set()
 
     ui.add_head_html(f"""
@@ -155,7 +160,6 @@ def main_page():
     </style>
     """)
 
-    # ── Top bar with sidebar toggle ─────────────────────────────────────
     with ui.header().classes("items-center no-wrap").style(
         f"background:{RED};padding:10px 20px;box-shadow:none;"
     ):
@@ -167,7 +171,6 @@ def main_page():
         ui.label("Automated entry / exit timeline extraction").style(
             "color:rgba(255,255,255,.75);font-size:12px;margin-left:12px;")
 
-    # ── Collapsible sidebar ──────────────────────────────────────────────
     with ui.left_drawer(value=True, bordered=True).props("width=300").style(
         f"background:{BG};border-right:1px solid {SURFACE};"
     ) as drawer:
@@ -190,12 +193,16 @@ def main_page():
     def render_sidebar():
         summary_slot.clear()
         with summary_slot:
+            if state["uploading"]:
+                with ui.row().classes("items-center").style("gap:8px;margin-bottom:4px;"):
+                    ui.spinner(size="sm").style(f"color:{RED};")
+                    n = len(state["uploading"])
+                    ui.label(f"Processing {n} document{'s' if n>1 else ''}...").style(
+                        f"font-size:12px;color:{TEXT_TER};")
             if docs:
-                n_done = len(verified)
-                n_total = len(docs)
+                n_done, n_total = len(verified), len(docs)
                 ui.label(f"{n_done} of {n_total} documents reviewed").style(
-                    f"font-size:12px;font-weight:600;color:{TEXT_TER};"
-                )
+                    f"font-size:12px;font-weight:600;color:{TEXT_TER};")
                 with ui.element("div").style(
                     f"background:{SURFACE};border-radius:{R_PILL};height:4px;overflow:hidden;"
                 ):
@@ -206,7 +213,10 @@ def main_page():
         with doc_list:
             for name, d in docs.items():
                 active_stamps = [s for s in d["stamps"] if not s.get("deleted")]
-                flagged = sum(1 for s in active_stamps if needs_review(s))
+                total = len(active_stamps)
+                n_missing = sum(1 for s in active_stamps if primary_entry(s) is None)
+                confs = [primary_entry(s)["ocr_conf"] for s in active_stamps
+                         if primary_entry(s) and primary_entry(s).get("ocr_conf") is not None]
                 is_active = name == state["active"]
                 is_done = name in verified
                 bg = hex_rgba(RED, 0.06) if is_active else BG
@@ -230,12 +240,18 @@ def main_page():
                             f"overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex:1;")
                         if is_done:
                             ui.icon("check_circle").style(f"font-size:16px;color:{RED};flex-shrink:0;")
-                    if flagged:
-                        ui.label(f"{flagged} stamp{'s' if flagged>1 else ''} need review").style(
-                            f"font-size:11px;color:{RED};font-weight:600;margin-top:2px;")
-                    else:
-                        ui.label("No flags").style(
-                            f"font-size:11px;color:{TEXT_TER};margin-top:2px;")
+                    with ui.row().style("gap:6px;align-items:center;flex-wrap:wrap;margin-top:2px;"):
+                        ui.label(f"{total} stamp{'s' if total != 1 else ''} found").style(
+                            f"font-size:11px;color:{TEXT_TER};")
+                        if n_missing:
+                            ui.label(f"{n_missing} missing date{'s' if n_missing != 1 else ''}").style(
+                                f"font-size:11px;color:{RED};font-weight:600;")
+                        if confs:
+                            lo = min(confs)
+                            low = lo < LOW_CONF_THRESHOLD
+                            ui.label(f"lowest {lo:.0%} OCR").style(
+                                f"font-size:11px;color:{RED if low else TEXT_TER};"
+                                f"font-weight:{'600' if low else '400'};")
 
         export_slot.clear()
         with export_slot:
@@ -257,15 +273,15 @@ def main_page():
                     f"font-weight:600;width:100%;margin-top:6px;background:transparent;")
 
     def export_verified():
-        rows = ["Document,Stamp,Stamp Type,Date Type,Date,OCR Confidence"]
+        rows = ["Document,Stamp,Type,Date,OCR Confidence"]
         for name in verified:
             for s in docs[name]["stamps"]:
                 if s.get("deleted"):
                     continue
-                for dte in s.get("dates", []):
-                    rows.append(
-                        f'{name},{s["id"]},{s["type"]},{dte["type"]},'
-                        f'{dte.get("value","")},{dte.get("ocr_conf") or ""}')
+                entry = primary_entry(s)
+                rows.append(
+                    f'{name},{s["id"]},{s["type"]},'
+                    f'{entry["value"] if entry else ""},{(entry.get("ocr_conf") if entry else "") or ""}')
         ui.download("\n".join(rows).encode(), "verified_records.csv")
 
     def export_feedback():
@@ -387,7 +403,7 @@ def main_page():
                         else "Click the opposite corner to finish")
                 ui.label(hint).style(f"font-size:12px;color:{RED};font-weight:600;")
 
-    # ── Document image pane (rebuilt only on doc switch) ─────────────────
+    # ── Document image pane ───────────────────────────────────────────────
     @ui.refreshable
     def render_document_pane():
         name = state["active"]
@@ -426,55 +442,36 @@ def main_page():
             f"font-size:11px;color:{TEXT_TER};margin-top:6px;width:{VW}px;"
         )
 
-    # ── Inline editor for a selected stamp ───────────────────────────────
+    # ── Inline editor — single date, type locked to the stamp's own type ──
     def render_editor_row(s, name):
+        c = TYPE_COLOR.get(s["type"], TEXT_SEC)
+        entry = primary_entry(s)
+
         with ui.column().style(
             f"width:100%;background:{BG_ALT};border-radius:0 0 {R_MD} {R_MD};"
-            f"padding:12px 16px;gap:8px;"
+            f"padding:14px 16px;gap:10px;"
         ):
-            rows_container = ui.column().style("gap:6px;width:100%;")
+            with ui.row().classes("items-center w-full").style("gap:10px;flex-wrap:wrap;"):
+                pill(s["type"], c)
+                date_in = ui.input(
+                    value=to_html_date(entry["value"] if entry else None)
+                ).props("type=date dense").style("flex:1;min-width:150px;")
+                conf = entry.get("ocr_conf") if entry else None
+                status_text = (f"{conf:.0%} OCR" if conf is not None else
+                                "Manually entered" if entry else "No date yet")
+                status_label = ui.label(status_text).style(
+                    f"font-size:11px;color:{TEXT_TER};white-space:nowrap;")
 
-            def redraw():
-                rows_container.clear()
-                with rows_container:
-                    for idx, dte in enumerate(s["dates"]):
-                        with ui.row().classes("items-center w-full").style("gap:6px;flex-wrap:nowrap;"):
-                            type_sel = ui.select(
-                                ["Entry", "Exit", "Until", "Unknown"],
-                                value=dte.get("type", "Unknown"),
-                            ).style("width:110px;flex-shrink:0;")
-                            date_in = ui.input(value=to_html_date(dte.get("value"))).props(
-                                "type=date dense").style("flex:1;min-width:130px;")
-                            conf = dte.get("ocr_conf")
-                            ui.label(f"{conf:.0%}" if conf is not None else "Manual").style(
-                                f"font-size:11px;color:{TEXT_TER};width:56px;flex-shrink:0;text-align:right;"
-                            )
-
-                            def commit(idx=idx, type_sel=type_sel, date_in=date_in):
-                                s["dates"][idx]["type"] = type_sel.value
-                                s["dates"][idx]["value"] = to_date_str(date_in.value)
-                                s["dates"][idx]["ocr_conf"] = None
-                                if state["panel"]:
-                                    state["panel"]["img_widget"].set_content(
-                                        build_svg_overlay(docs[name]["stamps"], s["id"]))
-                                render_table.refresh()
-
-                            type_sel.on("update:model-value", lambda e, c=commit: c())
-                            date_in.on("update:model-value", lambda e, c=commit: c())
-
-                            def remove_date(idx=idx):
-                                s["dates"].pop(idx)
-                                render_table.refresh()
-                            ui.button(icon="close", on_click=remove_date).props(
-                                "flat dense round size=sm").style(f"color:{TEXT_TER};flex-shrink:0;")
-
-                    def add_date():
-                        s["dates"].append({"value": None, "type": "Entry", "ocr_conf": None})
-                        render_table.refresh()
-                    ui.button("+ Add Date", on_click=add_date).props("flat dense").style(
-                        f"font-size:12px;color:{RED};font-weight:600;padding:0;")
-
-            redraw()
+            def save_date():
+                val = to_date_str(date_in.value)
+                if val:
+                    s["dates"] = [{"value": val, "type": s["type"], "ocr_conf": None}]
+                else:
+                    s["dates"] = []
+                if state["panel"]:
+                    state["panel"]["img_widget"].set_content(
+                        build_svg_overlay(docs[name]["stamps"], s["id"]))
+                render_table.refresh()
 
             def remove_stamp():
                 s["deleted"] = True
@@ -484,11 +481,15 @@ def main_page():
                         build_svg_overlay(docs[name]["stamps"], None))
                 render_table.refresh()
                 render_sidebar()
-            ui.separator().style(f"background:{SURFACE};margin:4px 0;")
-            ui.button("Remove This Stamp (false detection)", on_click=remove_stamp).props(
-                "flat dense").style(f"font-size:12px;color:{RED};font-weight:600;padding:0;")
 
-    # ── Timeline table ────────────────────────────────────────────────────
+            with ui.row().style("gap:8px;"):
+                ui.button("Save Date", on_click=save_date).props("unelevated dense").style(
+                    f"background:{RED};color:white;border-radius:{R_MD};"
+                    f"font-weight:600;font-size:12px;padding:6px 16px;")
+                ui.button("Remove This Stamp", on_click=remove_stamp).props("flat dense").style(
+                    f"font-size:12px;color:{TEXT_TER};font-weight:600;")
+
+    # ── Timeline table ─────────────────────────────────────────────────────
     GRID = "10px 96px 68px 108px 1fr 22px"
 
     @ui.refreshable
@@ -498,7 +499,23 @@ def main_page():
             return
         stamps = docs[name]["stamps"]
         active_stamps = [s for s in stamps if not s.get("deleted")]
-        ordered = sorted(active_stamps, key=chrono_key)
+
+        with ui.row().classes("items-center w-full").style("gap:6px;margin-bottom:8px;"):
+            ui.label("Sort by").style(f"font-size:11px;color:{TEXT_TER};font-weight:600;")
+            for mode in ("Date", "OCR Confidence"):
+                active_mode = state["sort_mode"] == mode
+                def set_mode(m=mode):
+                    state["sort_mode"] = m
+                    render_table.refresh()
+                ui.button(mode, on_click=set_mode).props("flat dense").style(
+                    f"font-size:11px;font-weight:700;padding:3px 10px;border-radius:{R_PILL};"
+                    f"min-width:0;background:{RED if active_mode else 'transparent'};"
+                    f"color:{'white' if active_mode else TEXT_TER};"
+                    f"border:1px solid {RED if active_mode else BORDER};"
+                )
+
+        ordered = (sorted(active_stamps, key=chrono_key) if state["sort_mode"] == "Date"
+                   else sorted(active_stamps, key=conf_key))
         sel_id = state["selected"]
 
         with ui.element("div").style(
@@ -514,7 +531,7 @@ def main_page():
 
         with ui.column().style(
             f"width:100%;gap:0;border:1px solid {SURFACE};border-top:none;"
-            f"border-radius:0 0 {R_MD} {R_MD};max-height:560px;overflow-y:auto;overflow-x:hidden;"
+            f"border-radius:0 0 {R_MD} {R_MD};max-height:520px;overflow-y:auto;overflow-x:hidden;"
         ):
             if not ordered:
                 with ui.row().style("padding:20px;justify-content:center;"):
@@ -525,11 +542,11 @@ def main_page():
                 entry = primary_entry(s)
                 c = TYPE_COLOR.get(s["type"], TEXT_SEC)
                 is_sel = s["id"] == sel_id
-                flagged = needs_review(s)
                 val = entry["value"] if entry else None
                 conf = entry.get("ocr_conf") if entry else None
+                low = conf is not None and conf < LOW_CONF_THRESHOLD
 
-                dot_color = RED if flagged else CERISE
+                dot_color = RED if (conf is None and entry is None) else (RED if low else CERISE)
                 row_bg = hex_rgba(c, 0.05) if is_sel else BG
 
                 def onclick(sid=s["id"]):
@@ -541,10 +558,10 @@ def main_page():
                     f"border-bottom:1px solid {SURFACE};min-width:0;"
                 ).classes("qi-row").on("click", onclick):
                     ui.element("div").style(
-                        f"width:8px;height:8px;border-radius:50%;background:{dot_color};"
-                        f"flex-shrink:0;")
+                        f"width:8px;height:8px;border-radius:50%;background:{dot_color};flex-shrink:0;")
                     ui.label(val if val else "\u2014").style(
-                        f"font-size:13px;font-weight:700;color:{TEXT_PRI};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;")
+                        f"font-size:13px;font-weight:700;color:{TEXT_PRI};"
+                        f"white-space:nowrap;overflow:hidden;text-overflow:ellipsis;")
                     pill(s["type"], c)
                     with ui.column().style("gap:0;min-width:0;"):
                         ui.label(s["id"]).style(
@@ -558,12 +575,10 @@ def main_page():
                                     f"background:{SURFACE};border-radius:{R_PILL};height:4px;overflow:hidden;"
                                 ):
                                     ui.element("div").style(
-                                        f"width:{int(conf*100)}%;background:{RED if flagged else CERISE};height:4px;")
-                                ui.label(
-                                    f"{conf:.0%} OCR" + (" \u2022 Needs review" if flagged else "")
-                                ).style(
-                                    f"font-size:11px;color:{RED if flagged else TEXT_TER};"
-                                    f"font-weight:{'700' if flagged else '400'};white-space:nowrap;")
+                                        f"width:{int(conf*100)}%;background:{RED if low else CERISE};height:4px;")
+                                ui.label(f"{conf:.0%} OCR").style(
+                                    f"font-size:11px;color:{RED if low else TEXT_TER};"
+                                    f"font-weight:{'700' if low else '400'};white-space:nowrap;")
                             else:
                                 ui.label("Manual entry").style(f"font-size:12px;color:{TEXT_TER};white-space:nowrap;")
                     else:
@@ -604,7 +619,7 @@ def main_page():
                         ui.button("Restore", on_click=restore).props("flat dense").style(
                             f"font-size:11px;color:{RED};font-weight:600;flex-shrink:0;")
 
-    # ── Document header — icon-only verify toggle, decoupled from image pane ──
+    # ── Document header — Entry/Exit counts only, icon verify toggle ───────
     @ui.refreshable
     def render_doc_header():
         name = state["active"]
@@ -614,7 +629,6 @@ def main_page():
         active_stamps = [s for s in stamps if not s.get("deleted")]
         n_entry = sum(1 for s in active_stamps if s["type"] == "Entry")
         n_exit  = sum(1 for s in active_stamps if s["type"] == "Exit")
-        n_flag  = sum(1 for s in active_stamps if needs_review(s))
         is_verified = name in verified
 
         def toggle_verify():
@@ -643,10 +657,8 @@ def main_page():
                     with ui.row().style("gap:6px;flex-wrap:wrap;"):
                         pill(f"{n_entry} Entry", PURPLE)
                         pill(f"{n_exit} Exit", RED)
-                        if n_flag:
-                            pill(f"{n_flag} Need Review", TEXT_TER)
 
-    # ── Main layout ────────────────────────────────────────────────────
+    # ── Main layout ─────────────────────────────────────────────────────
     @ui.refreshable
     def render_main():
         main.clear()
@@ -672,26 +684,41 @@ def main_page():
                     render_document_pane()
 
                 with ui.column().style(f"flex:1 1 {TABLE_MIN_W}px;min-width:{TABLE_MIN_W}px;gap:8px;"):
-                    overline("Stamp Timeline — sorted by date")
+                    overline("Stamp Timeline")
                     render_table()
 
-    # ── Upload handler ───────────────────────────────────────────────────
+    # ── Upload handler — offloaded to a thread so the event loop stays responsive ──
     async def handle_upload(e: events.UploadEventArguments):
-        content = await e.file.read() if hasattr(e.file, "read") else e.content.read()
+        content = await e.file.read()
         img = Image.open(io.BytesIO(content)).convert("RGB")
         img_np = np.array(img)
-        stamps = pipeline.process(img_np)
-        for s in stamps:
-            s.setdefault("source", "model_detected")
-            s.setdefault("deleted", False)
+
         fname = e.file.name
-        if fname in docs:  # avoid silently overwriting a same-named re-upload
+        if fname in docs:
             base, dot, ext = fname.rpartition(".")
             n = 2
             while f"{base}({n}){dot}{ext}" in docs:
                 n += 1
             fname = f"{base}({n}){dot}{ext}"
+
+        state["uploading"].add(fname)
+        render_sidebar()
+
+        try:
+            loop = asyncio.get_event_loop()
+            stamps = await loop.run_in_executor(None, pipeline.process, img_np)
+        except Exception as ex:
+            ui.notify(f"Failed to process {fname}: {ex}", color=RED)
+            state["uploading"].discard(fname)
+            render_sidebar()
+            return
+
+        for s in stamps:
+            s.setdefault("source", "model_detected")
+            s.setdefault("deleted", False)
+
         docs[fname] = {"img": img, "stamps": stamps, "next_uid": 1}
+        state["uploading"].discard(fname)
         if state["active"] is None:
             state["active"] = fname
         render_sidebar()
