@@ -85,6 +85,7 @@ class AzureOpenAIExtractor:
                     }
                 ],
                 temperature=0.0,
+                seed=42,
                 logprobs=True
             )
             
@@ -105,6 +106,7 @@ class AzureOpenAIExtractor:
                 if date_logprobs:
                     confidence = sum(date_logprobs) / len(date_logprobs)
             
+            print(final_date, confidence)
             return final_date, confidence
             
         except Exception as e:
