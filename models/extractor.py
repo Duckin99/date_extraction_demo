@@ -1,6 +1,7 @@
 import cv2
 import numpy as np
 import base64
+import math
 from typing import Tuple, List, Dict, Any, Optional
 from datetime import datetime
 from pydantic import BaseModel, Field, field_validator
@@ -13,10 +14,7 @@ from azure.ai.documentintelligence import DocumentIntelligenceClient
 
 class StampExtraction(BaseModel):
     date: Optional[str] = Field(
-        description="The extracted primary date exactly in DD MMM YYYY format (e.g., '14 OCT 2026'). Return null if unreadable."
-    )
-    confidence: float = Field(
-        description="Float between 0.0 and 1.0 representing your certainty."
+        description="The extracted primary date in strictly DD MMM YYYY format. Return null if unreadable."
     )
 
     @field_validator('date')
@@ -32,12 +30,9 @@ class StampExtraction(BaseModel):
 
 class AzureOpenAIExtractor:
     def __init__(self, endpoint: str, api_version: str = "2024-10-21", deployment_name: str = "gpt-4o-mini"):
-        # 1. Create the Azure AD Token Provider
         token_provider = get_bearer_token_provider(
             DefaultAzureCredential(), "https://cognitiveservices.azure.com/.default"
         )
-        
-        # 2. Initialize the client using azure_ad_token_provider instead of api_key
         self.client = AzureOpenAI(
             azure_endpoint=endpoint,
             azure_ad_token_provider=token_provider,
@@ -46,26 +41,28 @@ class AzureOpenAIExtractor:
         self.deployment_name = deployment_name
 
     def extract(self, img_crop: np.ndarray, stamp_type: str) -> Tuple[str, float]:
-        """
-        Sends crop to Azure OpenAI using Entra ID authentication and a dynamic prompt.
-        """
         _, encoded_image = cv2.imencode('.jpg', cv2.cvtColor(img_crop, cv2.COLOR_RGB2BGR))
         base64_image = base64.b64encode(encoded_image).decode('utf-8')
         
+        base_rules = (
+            "CRITICAL RULES:\n"
+            "- Format: The month is strictly a 3-letter abbreviation (JAN, FEB, MAR, APR, MAY, JUN, JUL, AUG, SEP, OCT, NOV, DEC). The year is strictly 4 digits.\n"
+            "- Artifacts: Single-digit days are often preceded by a dash or ink artifact (e.g., '-8' or '08'). Do not hallucinate this as a completely different number like '30'. Read the visible digit and normalize it (e.g., '08').\n"
+            "- STRICT ACCURACY: If the date is blurry, ink-smudged, invisible, or if you are highly uncertain about ANY digit, you MUST return null. Do not guess."
+        )
+
         if stamp_type == "Entry":
             prompt = (
-                "You are analyzing a cropped image of a passport Entry stamp. "
-                "Your task is to extract ONLY the primary Entry date. "
-                "Entry stamps typically contain two dates: the Entry date and an 'Until' date. "
-                "You must return ONLY the Entry date, which is chronologically earlier (lesser than) "
-                "and is usually located near the middle of the stamp. "
-                "Completely ignore the 'Until' or expiration date."
+                "You are analyzing a cropped passport Entry stamp.\n"
+                "Task: Extract ONLY the primary Entry date.\n"
+                "Note: Entry stamps typically contain two dates. You must return ONLY the chronologically earlier (lesser) date, usually located near the middle of the stamp. Ignore the 'Until' expiration date.\n\n"
+                f"{base_rules}"
             )
         else:
             prompt = (
-                "You are analyzing a cropped image of a passport Exit stamp. "
-                "Your task is to extract ONLY the primary Exit date from the image. "
-                "Return the exact date shown."
+                "You are analyzing a cropped passport Exit stamp.\n"
+                "Task: Extract ONLY the primary Exit date.\n\n"
+                f"{base_rules}"
             )
 
         try:
@@ -87,13 +84,28 @@ class AzureOpenAIExtractor:
                         ]
                     }
                 ],
-                temperature=0.0
+                temperature=0.0,
+                logprobs=True
             )
             
             result = response.choices[0].message.parsed
             final_date = result.date if result.date else ""
+            confidence = 0.0
             
-            return final_date, result.confidence
+            if final_date and response.choices[0].logprobs and response.choices[0].logprobs.content:
+                tokens = response.choices[0].logprobs.content
+                date_logprobs = []
+                
+                for t in tokens:
+                    clean_t = t.token.replace('"', '').replace('{', '').replace('}', '').replace(':', '').replace('\n', '').strip()
+                    
+                    if clean_t and clean_t in final_date:
+                        date_logprobs.append(math.exp(t.logprob))
+                        
+                if date_logprobs:
+                    confidence = sum(date_logprobs) / len(date_logprobs)
+            
+            return final_date, confidence
             
         except Exception as e:
             print(f"Azure OpenAI API Error: {e}")
