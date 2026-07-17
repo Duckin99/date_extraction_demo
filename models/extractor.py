@@ -2,15 +2,11 @@ import cv2
 import numpy as np
 import base64
 import math
-from typing import Tuple, List, Dict, Any, Optional
+from typing import Tuple, Optional
 from datetime import datetime
 from pydantic import BaseModel, Field, field_validator
-
-from azure.core.credentials import AzureKeyCredential
 from openai import AzureOpenAI
 from azure.identity import DefaultAzureCredential, get_bearer_token_provider
-
-from azure.ai.documentintelligence import DocumentIntelligenceClient
 
 class StampExtraction(BaseModel):
     date: Optional[str] = Field(
@@ -29,7 +25,7 @@ class StampExtraction(BaseModel):
             return None
 
 class AzureOpenAIExtractor:
-    def __init__(self, endpoint: str, api_version: str = "2024-10-21", deployment_name: str = "gpt-4o-mini"):
+    def __init__(self, endpoint: str, api_version: str = "2024-10-21", deployment_name: str = "gpt-4o"):
         token_provider = get_bearer_token_provider(
             DefaultAzureCredential(), "https://cognitiveservices.azure.com/.default"
         )
@@ -44,23 +40,25 @@ class AzureOpenAIExtractor:
         _, encoded_image = cv2.imencode('.jpg', cv2.cvtColor(img_crop, cv2.COLOR_RGB2BGR))
         base64_image = base64.b64encode(encoded_image).decode('utf-8')
         
+        # 1. High-Precision Rules targeting Hallucination and Spatial Fragility
         base_rules = (
-            "CRITICAL RULES:\n"
-            "- Format: The month is strictly a 3-letter abbreviation (JAN, FEB, MAR, APR, MAY, JUN, JUL, AUG, SEP, OCT, NOV, DEC). The year is strictly 4 digits.\n"
-            "- Artifacts: Single-digit days are often preceded by a dash or ink artifact (e.g., '-8' or '08'). Do not hallucinate this as a completely different number like '30'. Read the visible digit and normalize it (e.g., '08').\n"
-            "- STRICT ACCURACY: If the date is blurry, ink-smudged, invisible, or if you are highly uncertain about ANY digit, you MUST return null. Do not guess."
+            "CRITICAL EXTRACTION RULES:\n"
+            "1. IMAGE ORIENTATION: The stamp may be heavily rotated, flipped, or upside down. Mentally orient the text to its correct reading angle before extracting.\n"
+            "2. PARTIAL DATES (NO GUESSING): A valid date MUST clearly show the Day, Month, and Year. If the Day is missing, faded, cropped out, or illegible (e.g., you only see 'OCT 2026'), you MUST return null. Never invent or assume missing digits.\n"
+            "3. INK ARTIFACTS: Single-digit days may have stray borders or ink artifacts (e.g., '-8' or ']8'). Read the actual digit (e.g., '08') and ignore the artifact. Do not hallucinate entirely different numbers like '30'.\n"
+            "4. STRICT NULL MANDATE: False positives are strictly forbidden. If you are not 100% certain of all three components (DD, MMM, YYYY), return null immediately."
         )
 
         if stamp_type == "Entry":
             prompt = (
-                "You are analyzing a cropped passport Entry stamp.\n"
+                "You are an expert data extraction system analyzing a cropped passport Entry stamp.\n"
                 "Task: Extract ONLY the primary Entry date.\n"
-                "Note: Entry stamps typically contain two dates. You must return ONLY the chronologically earlier (lesser) date, usually located near the middle of the stamp. Ignore the 'Until' expiration date.\n\n"
+                "Note: Entry stamps often contain two dates. You must return ONLY the chronologically earlier (lesser) date, which is typically near the center. Completely ignore any 'Until' or expiration dates.\n\n"
                 f"{base_rules}"
             )
         else:
             prompt = (
-                "You are analyzing a cropped passport Exit stamp.\n"
+                "You are an expert data extraction system analyzing a cropped passport Exit stamp.\n"
                 "Task: Extract ONLY the primary Exit date.\n\n"
                 f"{base_rules}"
             )
@@ -78,14 +76,13 @@ class AzureOpenAIExtractor:
                                 "type": "image_url",
                                 "image_url": {
                                     "url": f"data:image/jpeg;base64,{base64_image}",
-                                    "detail": "low"
+                                    "detail": "high" # Bump to high for better rotation/resolution handling
                                 }
                             }
                         ]
                     }
                 ],
                 temperature=0.0,
-                seed=42,
                 logprobs=True
             )
             
@@ -106,50 +103,8 @@ class AzureOpenAIExtractor:
                 if date_logprobs:
                     confidence = sum(date_logprobs) / len(date_logprobs)
             
-            print(final_date, confidence)
             return final_date, confidence
             
         except Exception as e:
             print(f"Azure OpenAI API Error: {e}")
             return "", 0.0
-
-class AzureExtractor:
-    def __init__(self, endpoint: str, key: str):
-        """Initializes the official Azure SDK Client."""
-        self.client = DocumentIntelligenceClient(
-            endpoint=endpoint, 
-            credential=AzureKeyCredential(key)
-        )
-
-    def extract(self, img_crop: np.ndarray) -> Tuple[str, List[Dict[str, Any]]]:
-        """Sends cropped image to Azure and returns text and word confidences."""
-        # Convert OpenCV RGB array to JPEG bytes
-        _, encoded_image = cv2.imencode('.jpg', cv2.cvtColor(img_crop, cv2.COLOR_RGB2BGR))
-        image_bytes = encoded_image.tobytes()
-        
-        try:
-            poller = self.client.begin_analyze_document(
-                model_id="prebuilt-read", 
-                body=image_bytes
-            )
-            
-            result = poller.result()
-            
-            full_text = result.content
-            words_data = []
-            
-            if result.pages:
-                for page in result.pages:
-                    if page.words:
-                        for word in page.words:
-                            words_data.append({
-                                "text": word.content,
-                                "conf": word.confidence,
-                                "box": word.polygon # [x1, y1, x2, y2, x3, y3, x4, y4]
-                            })
-                            
-            return full_text, words_data
-                
-        except Exception as e:
-            print(f"Azure SDK Error: {e}")
-            return "", []
